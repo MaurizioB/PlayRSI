@@ -260,12 +260,14 @@ class VolumeSlider(QtWidgets.QWidget):
 
     def enterEvent(self, event):
         self.leaveTimer.stop()
-        self.expandAnimation.setDirection(self.expandAnimation.Forward)
-        self.expandAnimation.start()
-        self.slider.show()
-        r = self.slider.geometry()
-        r.moveTo(self.baseWidth + 2, (self.height() - self.slider.height()) / 2)
-        self.slider.setGeometry(r)
+        if (self.expandAnimation.state() != self.expandAnimation.Running and 
+            self.maximumWidth() == self.expandAnimation.animationAt(0).startValue()):
+                self.expandAnimation.setDirection(self.expandAnimation.Forward)
+                self.expandAnimation.start()
+                self.slider.show()
+                r = self.slider.geometry()
+                r.moveTo(self.baseWidth + 2, (self.height() - self.slider.height()) / 2)
+                self.slider.setGeometry(r)
 
     def leaveEvent(self, event):
         self.leaveTimer.start()
