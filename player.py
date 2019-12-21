@@ -1,11 +1,23 @@
 #!/usr/bin/env python3
 
+import os
 import re
 from math import sqrt
 import pyaudio
 import numpy as np
 import pydub
 from PyQt5 import QtCore, QtGui, QtWidgets, QtNetwork, uic
+
+if os.environ.get('XDG_CURRENT_DESKTOP'):
+    if os.environ['XDG_CURRENT_DESKTOP'].strip().lower() == 'kde':
+        if not os.environ['KDE_FULL_SESSION'].strip().lower() == 'true':
+            os.environ.update({'KDE_FULL_SESSION': ''})
+    else:
+        os.environ.update({'KDE_FULL_SESSION': ''})
+else:
+    os.environ.update({'KDE_FULL_SESSION': ''})
+
+VolumeStep = 10
 
 findIndex = re.compile('\d+')
 baseUrl = 'https://lsaplus.swisstxt.ch/audio/{}_96.stream/'
@@ -14,6 +26,9 @@ playlistFile = 'chunklist_DVR.m3u8'
 shortNames = 'uno', 'due', 'tre'
 radioNames = tuple('rete{}'.format(n) for n in shortNames)
 radioTitles = tuple('Rete{}'.format(n.title()) for n in shortNames)
+
+StartRole = QtCore.Qt.UserRole + 1000
+EndRole = StartRole + 1
 
 
 class Player(QtCore.QObject):
@@ -27,7 +42,7 @@ class Player(QtCore.QObject):
         self.nextData = None
         self.currentState = self.StoppedState
         self._volume = 1
-        self.curve = QtCore.QEasingCurve(QtCore.QEasingCurve.InCubic)
+#        self.curve = QtCore.QEasingCurve(QtCore.QEasingCurve.InCubic)
 
     def setVolume(self, volume):
         volume = volume * .01
@@ -86,8 +101,13 @@ class Player(QtCore.QObject):
             self.overlapping = False
 
     def getNextData(self):
+#        overlap = 1024
+#        overlap = 256
         overlap = 2048
         nextData = self.getData(self.currentIndex + 1)
+#        half = overlap // 2
+#        self.currentData[-overlap:] += nextData[half:half + overlap]
+#        self.nextData = nextData[half + overlap:]
         self.currentData[-overlap:] += nextData[:overlap]
         self.nextData = nextData[overlap:]
         self.overlapping = False
@@ -196,8 +216,11 @@ class VolumeSlider(QtWidgets.QWidget):
 
         self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, self)
         self.slider.hide()
+        self.slider.setFocusPolicy(QtCore.Qt.NoFocus)
         self.slider.setMaximum(100)
         self.slider.setValue(100)
+        self.slider.setTickPosition(self.slider.TicksBothSides)
+        self.slider.setTickInterval(25)
         self.slider.setFixedWidth(80)
         self.slider.valueChanged.connect(self.volumeChanged)
         self.slider.valueChanged.connect(self.updateVolume)
@@ -237,6 +260,17 @@ class VolumeSlider(QtWidgets.QWidget):
         else:
             self.currentIcon = self.highIcon
         self.update()
+        if volume:
+            self.setToolTip('{}%'.format(volume))
+        else:
+            self.setToolTip('Mute')
+        if self.isVisible():
+            rect = self.rect().translated(self.mapToGlobal(QtCore.QPoint()))
+            pos = QtGui.QCursor.pos()
+            if not pos in rect:
+                pos = QtCore.QPoint(pos.x(), self.mapToGlobal(self.rect().center()).y())
+            QtWidgets.QToolTip.showText(pos, self.toolTip(), self)
+#            print(QtGui.QCursor.pos() in rect)
 
     def eventFilter(self, source, event):
         # create a fake event to avoid custom style or proxystyle
@@ -288,11 +322,14 @@ class VolumeSlider(QtWidgets.QWidget):
             self.setVolume(event.x())
 
     def wheelEvent(self, event):
-        print('wheehe')
         step = self.slider.pageStep()
         if event.angleDelta().y() < 0 or event.angleDelta().x() < 0:
             step *= -1
         self.setVolume(self.volume() + step)
+        print('vln', self.volume())
+        screenPos = self.mapToGlobal(QtCore.QPoint())
+        QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), self.toolTip(), self, self.rect().translated(-screenPos))
+        event.accept()
 
 #    def resizeEvent(self, event):
 #        self.mask = QtGui.QPainterPath()
@@ -310,14 +347,14 @@ class VolumeSlider(QtWidgets.QWidget):
         qp.translate(.5, .5)
 
         baseSize = self.baseWidth - 4
-        centerY = self.rect().center().y()
+        centerY = QtCore.QRectF(self.rect()).center().y()
         rect = QtCore.QRectF(0, 0, baseSize, baseSize)
         rect.moveCenter(QtCore.QPointF(self.baseWidth / 2, centerY - 1))
-        qp.drawRoundedRect(rect, 2, 2)
+        qp.drawRoundedRect(rect.toRect(), 2, 2)
 
         iconSize = self.iconSize
         pos = (self.height() - iconSize) / 2 - 1
-        qp.drawPixmap(pos, pos, self.currentIcon.pixmap(iconSize))
+        qp.drawPixmap(pos - 1, pos, self.currentIcon.pixmap(iconSize))
 
 #        if self.sliderShown:
 #            qp.translate(self.baseWidth + 2, centerY)
@@ -345,10 +382,11 @@ class LiveButton(QtWidgets.QToolButton):
 
 class SeekSlider(QtWidgets.QWidget):
     valueChanged = QtCore.pyqtSignal(int)
-    hourBackground = QtGui.QColor(255, 255, 255, 128)
+    hourBackground = QtGui.QColor(255, 255, 255, 192)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.setFocusPolicy(QtCore.Qt.NoFocus)
 #        self.setMouseTracking(True)
 
         fm = self.fontMetrics()
@@ -359,6 +397,7 @@ class SeekSlider(QtWidgets.QWidget):
         self.topMargin = fm.height()
 
         self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, self)
+        self.slider.setFocusPolicy(QtCore.Qt.NoFocus)
         self.slider.valueChanged.connect(self.update)
         self.slider.valueChanged.connect(self.valueChanged)
         self.slider.installEventFilter(self)
@@ -481,7 +520,7 @@ class SeekSlider(QtWidgets.QWidget):
             qp.setPen(self.halfPen)
             for tick in self.halfTicks:
                 qp.drawLine(tick, y, tick, self.topMargin)
-            if self.quarterSize >= 32:
+            if self.quarterSize >= 16:
                 qp.setPen(self.quarterPen)
                 y = self.topMargin * .85
                 for tick in self.quarterTicks:
@@ -491,11 +530,18 @@ class SeekSlider(QtWidgets.QWidget):
         hourRect = QtCore.QRect(2, 0, self.hourSize - 2, self.topMargin)
         hour = self.leftHour
         fm = self.slider.fontMetrics()
+        lastTextRect = None
         for tick in self.hourTicks:
+            # first draw ticks, as labels have to paint over them
             qp.drawLine(tick, 0, tick, self.topMargin)
+        for tick in self.hourTicks:
             timeStr = '{:02}:00'.format(hour)
             textRect = fm.boundingRect(hourRect.translated(tick, 0), 
                 QtCore.Qt.AlignLeft|QtCore.Qt.AlignTop, timeStr).adjusted(0, 0, 2, 0)
+            if lastTextRect and lastTextRect.intersects(textRect):
+                lastTextRect = None
+                continue
+            lastTextRect = textRect
             qp.save()
             qp.setPen(QtCore.Qt.NoPen)
             qp.setBrush(self.hourBackground)
@@ -521,14 +567,98 @@ class SeekSlider(QtWidgets.QWidget):
                 timeStr)
 
 
+class RecordDock(QtWidgets.QDockWidget):
+    closed = QtCore.pyqtSignal()
+    unfloat = QtCore.pyqtSignal()
+    def __init__(self, parent, show=False):
+        super().__init__(parent)
+        self.setWindowIcon(QtGui.QIcon('record.svg'))
+        self.setFloating(True)
+        if not show:
+            self.hide()
+        self.setAllowedAreas(QtCore.Qt.NoDockWidgetArea)
+        self.floatButton = self.findChild(QtWidgets.QAbstractButton, 'qt_dockwidget_floatbutton')
+        self.floatButton.clicked.connect(self.unfloat)
+
+    def closeEvent(self, event):
+        self.closed.emit()
+        super().closeEvent(event)
+
+
+class TrayIcon(QtWidgets.QSystemTrayIcon):
+    pass
+
+
+def getTime(t):
+    return t.toString('d HH:mm:ss')
+
+
+class DurationDelegate(QtWidgets.QStyledItemDelegate):
+    def displayText(self, secs, locale):
+        mins, secs = divmod(secs, 60)
+        hours, mins = divmod(mins, 60)
+        if hours:
+            return '{}:{:02}:{:02}'.format(hours, mins, secs)
+        return '{:02}:{:02}'.format(mins, secs)
+
+
+class RecordModel(QtGui.QStandardItemModel):
+    # will be SortFilterProxyModel from filesystem!
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.getRecordings()
+
+    def getRecordings(self):
+        # clearing will clear the currentIndex, selection and other things...
+        # subclass from AbstractItemModel or existing subclasses instead!
+        self.clear()
+        self.setHorizontalHeaderLabels(['Network', 'Start', 'End', 'Duration'])
+
+        from random import randrange
+        self.recordings = [[], [], []]
+        for radio, (radioName, radioTitle) in enumerate(zip(radioNames, radioTitles)):
+            radioItem = QtGui.QStandardItem(radioTitle)
+            radioItem.setIcon(QtGui.QIcon('{}.png'.format(radioName)))
+            self.appendRow(radioItem)
+
+            randomString = 'randomtext' * 100
+            for r in range(randrange(1, 5)):
+                recordItem = QtGui.QStandardItem('Recording {} {}'.format(r + 1, randomString[:randrange(128)]))
+                now = QtCore.QDateTime.currentDateTime()
+                start = now.addDays(-randrange(1)).addSecs(-randrange(86400))
+                duration = min(randrange(0, 7200), start.secsTo(now.addSecs(-10)))
+                end = start.addSecs(duration)
+                startItem = QtGui.QStandardItem()
+                startItem.setData(start, QtCore.Qt.DisplayRole)
+                endItem = QtGui.QStandardItem()
+                endItem.setData(end, QtCore.Qt.DisplayRole)
+                # this will have a item delegate...
+                durationItem = QtGui.QStandardItem()
+                durationItem.setData(start.secsTo(end), QtCore.Qt.DisplayRole)
+                durationItem.setTextAlignment(QtCore.Qt.AlignRight|QtCore.Qt.AlignVCenter)
+#                print(getTime(start), getTime(end), end.secsTo(now), getTime(now), start < end, end < now)
+
+                radioItem.appendRow([recordItem, startItem, endItem, durationItem])
+
+#            radioItem.setText('bsbuba')
+#            radioItem.appendRow([startItem])
+
+#    def rowCount(self, parent):
+#        if not parent.isValid():
+#            return 3
+        
+
+
 class RsiPlayer(QtWidgets.QMainWindow):
+    shown = False
+    recordDockShown = False
+
     def __init__(self):
         super().__init__()
         uic.loadUi('player.ui', self)
 
         self.settings = QtCore.QSettings()
         defaultRadio = self.settings.value('defaultRadio', 0, type=int)
-        lastRadio = self.settings.value('lastRadio', defaultRadio, type=int)
         cacheDirs = QtCore.QStandardPaths.standardLocations(
             QtCore.QStandardPaths.AppDataLocation)
         self.cacheDirs = []
@@ -547,9 +677,20 @@ class RsiPlayer(QtWidgets.QMainWindow):
         except Exception as e:
             print('TODO create temp dir?', e)
 
-        self.rete1Btn.buttonPixmap = QtGui.QPixmap('reteuno.png')
-        self.rete2Btn.buttonPixmap = QtGui.QPixmap('retedue.png')
-        self.rete3Btn.buttonPixmap = QtGui.QPixmap('retetre.png')
+        self.radioPixmaps = []
+        self.radioIcons = []
+
+        for radio, radioName in enumerate(radioNames, 1):
+            btn = getattr(self, 'rete{}Btn'.format(radio))
+            pixmap = QtGui.QPixmap('{}.png'.format(radioName))
+            btn.buttonPixmap = pixmap
+            self.radioPixmaps.append(pixmap)
+            self.radioIcons.append(QtGui.QIcon(pixmap))
+
+        self.trayIcon = TrayIcon(self.radioIcons[1])
+        if self.useTrayIcon():
+            self.trayIcon.show()
+        self.trayIcon.activated.connect(self.trayClicked)
 
         self.playCache = {r:{} for r in range(3)}
 
@@ -574,51 +715,171 @@ class RsiPlayer(QtWidgets.QMainWindow):
         self.manager = QtNetwork.QNetworkAccessManager()
         self.manager.finished.connect(self.networkReply)
 
-        self.player = Player(self)
-        self.player.request.connect(self.requestIndex)
-
         self.volumeSlider.volumeChanged.connect(self.setVolume)
-        self.volumeSlider.setVolume(self.settings.value('volume', 100, type=int))
-
-        self.lastRadio = -1
-        self.setRadio(lastRadio)
 
         self.referenceTimer = QtCore.QTimer(interval=10000, timeout=self.seekSlider.updateLabelPositions)
         self.referenceTimer.start()
         self.playlistRequestTimer = QtCore.QTimer(singleShot=True, interval=9000, timeout=self.loadPlaylist)
         self.timeStampTimer = QtCore.QTimer(interval=1000, timeout=self.updateTimeStamp)
 
-        self.recordModel = QtGui.QStandardItemModel()
+        self.recordModel = RecordModel(self)
         self.recordTree.setModel(self.recordModel)
+        self.recordTree.setItemDelegateForColumn(3, DurationDelegate())
         self.loadRecordings()
 
+        self.resize(self.width(), self.sizeHint().height())
+
+        self.toggleRecBtn.setIcon(QtGui.QIcon('record.svg'))
+        self.floatRecBtn.setIcon(
+            self.style().standardIcon(QtWidgets.QStyle.SP_TitleBarNormalButton, None, self))
+
+        showRecordings = self.settings.value('showRecordings', True, type=bool)
+        floatRecordings = self.settings.value('floatRecordings', False, type=bool)
+        showRecordDock = showRecordings and floatRecordings
+
+        self.recordDock = RecordDock(self, showRecordDock)
+        self.recordDock.installEventFilter(self)
+
+        if showRecordDock and not self.settings.contains('recordDockGeo'):
+            QtCore.QTimer.singleShot(0, lambda: self.recordDock.adjustSize)
+
+        self.toggleRecBtn.setChecked(showRecordings)
+        self.floatRecBtn.setVisible(showRecordings)
+        if floatRecordings:
+            self.recordDock.setWidget(self.recordTree)
+            self.floatRecBtn.setChecked(True)
+        else:
+            self.recordTree.setVisible(showRecordings)
+            self.floatRecBtn.setChecked(False)
+
+        self.toggleRecBtn.toggled.connect(self.toggleRecordings)
+        self.floatRecBtn.toggled.connect(self.setFloatRecordings)
+
+        self.recordDock.closed.connect(lambda: self.toggleRecBtn.setChecked(False))
+        self.recordDock.unfloat.connect(lambda: self.floatRecBtn.setChecked(False))
+        self.recordDockWasVisible = self.recordDock.isVisible()
+
+        self.restoreGeometry(self.settings.value('geometry', type=QtCore.QByteArray))
+
+        self.lastRadio = -1
+        lastRadio = self.settings.value('lastRadio', defaultRadio, type=int)
+
+        self.player = Player(self)
+        self.player.request.connect(self.requestIndex)
+
+        self._volume = self.settings.value('volume', 100, type=int)
+        self.volumeSlider.setVolume(self._volume)
+        self.setRadio(lastRadio)
+
+        self.playToggleBtn.installEventFilter(self)
+
+    def useTrayIcon(self):
+        return self.settings.value('trayIcon', True, bool)
+
+    def adjustRecordDock(self):
+        if not self.recordDock.isVisible():
+            QtCore.QTimer.singleShot(0, self.adjustRecordDock)
+            return
+        geo = self.recordDock.geometry()
+        screens = QtWidgets.QApplication.screens()
+        for screen in screens:
+            if geo.intersects(screen.availableGeometry().adjusted(2, 2, -2, -2)):
+                return
+        screenGeo = screens[0].availableGeometry()
+        if geo.left() > screenGeo.right() - 2:
+            geo.moveRight(screenGeo.right())
+        elif geo.right() < screenGeo.left() + 2:
+            geo.moveLeft(screenGeo.left())
+        if geo.top() > screenGeo.bottom() - 2:
+            geo.moveBottom(screenGeo.bottom())
+        elif geo.bottom() < screenGeo.top() + 2:
+            geo.moveTop(screen.top())
+        self.recordDock.setGeometry(geo)
+
+    def hideToTray(self):
+        self.recordDockWasVisible = self.recordDock.isVisible()
+        self.hide()
+        self.recordDock.hide()
+
+    def trayClicked(self, reason):
+        if reason == self.trayIcon.Trigger:
+            if self.isVisible():
+                self.recordDockWasVisible = self.recordDock.isVisible()
+            self.setVisible(not self.isVisible())
+            if self.isVisible() and self.recordDockWasVisible:
+                self.recordDock.show()
+            elif not self.isVisible():
+                self.recordDock.hide()
+
+    def setFloatRecordings(self, floating):
+        self.settings.setValue('floatRecordings', floating)
+        if floating:
+            preHeight = self.height()
+            self.recordDock.setWidget(self.recordTree)
+            newHeight = preHeight - self.recordTree.height() - self.mainLayout.verticalSpacing()
+            self.setFixedHeight(newHeight)
+            self.recordDock.show()
+        else:
+            self.mainLayout.addWidget(self.recordTree)
+            self.recordDock.hide()
+            self.setFixedHeight(16777215)
+            QtWidgets.QApplication.processEvents()
+            self.resize(self.width(), self.sizeHint().height())
+
+    def toggleRecordings(self, show):
+        self.settings.setValue('showRecordings', show)
+        self.floatRecBtn.setVisible(show)
+        if self.recordTree.parent() != self.centralWidget():
+            self.recordDock.setVisible(show)
+        else:
+            if show:
+                self.setMaximumHeight(16777215)
+                self.recordTree.show()
+                self.resize(self.width(), self.sizeHint().height())
+            else:
+                preHeight = self.height()
+                self.recordTree.hide()
+                newHeight = preHeight - self.recordTree.height() - self.mainLayout.verticalSpacing()
+                self.setFixedHeight(newHeight)
+                self.resize(self.width(), newHeight)
+
     def loadRecordings(self):
-        from random import randrange
-        locale = QtCore.QLocale()
-        self.recordModel.clear()
-        self.recordModel.setHorizontalHeaderLabels(['Network', 'Start', 'End', 'Duration'])
-        for radio, title in enumerate(radioTitles):
-            radioItem = QtGui.QStandardItem(title)
-            self.recordModel.appendRow(radioItem)
-            items = randrange(1, 5)
-            for i in range(items):
-                titleItem = QtGui.QStandardItem('Recording {}'.format(i + 1))
-                start = QtCore.QDateTime.currentDateTime()
-                start = start.addDays(randrange(1, 10))
-                start = start.addSecs(randrange(86400))
-                startItem = QtGui.QStandardItem(locale.toString(start, QtCore.QLocale.ShortFormat))
-                duration = randrange(120, 7200)
-                endItem = QtGui.QStandardItem(locale.toString(start.addSecs(duration), QtCore.QLocale.ShortFormat))
-                m, s = divmod(duration, 60)
-                h, m = divmod(m, 60)
-                durationItem = QtGui.QStandardItem(QtCore.QTime(h, m, s).toString('HH:mm:ss'))
-                subItems = [titleItem, startItem, endItem, durationItem]
-                for item in subItems[1:]:
-                    item.setFlags(item.flags() & ~ QtCore.Qt.ItemIsEditable)
-                radioItem.appendRow(subItems)
-        self.recordTree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
-        self.recordTree.header().setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
-        self.recordTree.header().setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
+#        from random import randrange
+##        locale = QtCore.QLocale()
+#        self.recordModel.clear()
+#        self.recordModel.setHorizontalHeaderLabels(['Network', 'Start', 'End', 'Duration'])
+#        for radio, title in enumerate(radioTitles):
+#            radioItem = QtGui.QStandardItem(title)
+#            radioItem.setIcon(self.radioIcons[radio])
+#            self.recordModel.appendRow(radioItem)
+#            items = randrange(1, 5)
+#            for i in range(items):
+#                titleItem = QtGui.QStandardItem('Recording {} {}'.format(i + 1, 'x' * randrange(128)))
+#                startItem = QtGui.QStandardItem()
+#                start = QtCore.QDateTime.currentDateTime()
+#                start = start.addDays(randrange(1, 10))
+#                start = start.addSecs(randrange(86400))
+##                startItem = QtGui.QStandardItem(locale.toString(start, QtCore.QLocale.ShortFormat))
+#                startItem.setData(start, QtCore.Qt.DisplayRole)
+#                duration = randrange(120, 7200)
+##                endItem = QtGui.QStandardItem(locale.toString(start.addSecs(duration), QtCore.QLocale.ShortFormat))
+#                endItem = QtGui.QStandardItem()
+#                endItem.setData(start.addSecs(duration), QtCore.Qt.DisplayRole)
+#                m, s = divmod(duration, 60)
+#                h, m = divmod(m, 60)
+##                durationItem = QtGui.QStandardItem(QtCore.QTime(h, m, s).toString('HH:mm:ss'))
+#                durationItem = QtGui.QStandardItem()
+#                durationItem.setData(QtCore.QTime(h, m, s).toString('HH:mm:ss'), QtCore.Qt.DisplayRole)
+#                subItems = [titleItem, startItem, endItem, durationItem]
+#                for item in subItems[1:]:
+#                    item.setFlags(item.flags() & ~ QtCore.Qt.ItemIsEditable)
+#                radioItem.appendRow(subItems)
+        self.recordTree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+#        self.recordTree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+#        for c in range(1, self.recordModel.columnCount()):
+#            self.recordTree.header().setSectionResizeMode(c, QtWidgets.QHeaderView.ResizeToContents)
+        self.recordTree.header().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
+        self.recordTree.header().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
         self.recordTree.header().setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
         self.recordTree.expandAll()
 
@@ -628,9 +889,14 @@ class RsiPlayer(QtWidgets.QMainWindow):
         if self.liveBtn.isDown():
             self.timeEdit.setTime(self.timeReference())
 
+    def volume(self):
+        return self._volume
+
     def setVolume(self, volume):
-        self.player.setVolume(volume)
-        self.settings.setValue('volume', volume)
+        self._volume = max(0, min(volume, 100))
+        self.player.setVolume(self._volume)
+        self.volumeSlider.setVolume(self._volume)
+        self.settings.setValue('volume', self._volume)
 
     def seek(self, value):
         self.liveBtn.setDown(value == self.seekSlider.maximum() and self.playToggleBtn.isChecked())
@@ -651,10 +917,9 @@ class RsiPlayer(QtWidgets.QMainWindow):
     def setRadio(self, radio=None, state=True):
         if not state:
             return
-        self.setWindowTitle('RSI - {}'.format(radioTitles[self.radioGroup.checkedId()]))
-#        if not self.playToggleBtn.isChecked():
-#            self.lastRadio = self.radioGroup.checkedId()
-#            return
+        self.setWindowTitle(u'RSI - {}'.format(radioTitles[self.radioGroup.checkedId()]))
+        self.recordDock.setWindowTitle(u'RSI - Recordings'.format(self.windowTitle()))
+
         if isinstance(radio, QtWidgets.QAbstractButton) or radio is None:
             radio = self.radioGroup.checkedId()
             radioBtn = self.radioGroup.button(radio)
@@ -668,8 +933,13 @@ class RsiPlayer(QtWidgets.QMainWindow):
             self.settings.setValue('lastRadio', radio)
         radioBtn.setChecked(True)
 
+        icon = self.radioIcons[radio]
+        self.trayIcon.setIcon(icon)
+        self.setWindowIcon(icon)
+
         if self.lastRadio < 0 or self.lastRadio == radio:
             self.lastRadio = radio
+            print('returnoooo', self.lastRadio, radio)
             return
         self.lastRadio = radio
         if self.player.currentState in (self.player.ActiveState, self.player.SuspendedState):
@@ -768,16 +1038,106 @@ class RsiPlayer(QtWidgets.QMainWindow):
                 self.timeStampTimer.start()
                 self.updateTimeStamp()
             self.cache[radio][index] = fileName
-#            radio = 
-#            cacheDict = self.playCache
-#            self.playCache
 #        print('reply!', url.endswith(playlistFile))
 
     def timeReference(self):
         return QtCore.QTime.currentTime().addSecs(-10)
 
-#    def togglePlay(self, state):
-#        self.playToggleBtn.setIcon(self.playIcons[state])
+    def restoreRecordDockGeometry(self):
+        if not self.recordDockShown:
+            self.recordDockShown = True
+            recordDockGeo = self.settings.value('recordDockGeo', type=QtCore.QByteArray)
+            if recordDockGeo:
+                self.recordDock.restoreGeometry(recordDockGeo)
+                self.adjustRecordDock()
+                return True
+            self.adjustRecordDock()
+        return False
+
+    def stepVolume(self, amount):
+        self.setVolume(self.volume() + amount)
+
+    def volumeUp(self):
+        self.stepVolume(VolumeStep)
+
+    def volumeDown(self):
+        self.stepVolume(-VolumeStep)
+
+    def eventFilter(self, source, event):
+        if source == self.recordDock:
+            if event.type() in (QtCore.QEvent.Resize, QtCore.QEvent.Move) and source.isVisible():
+                return self.restoreRecordDockGeometry()
+            elif event.type() == QtCore.QEvent.Show:
+                return self.restoreRecordDockGeometry()
+            elif event.type() == QtCore.QEvent.Hide:
+                self.settings.setValue('recordDockGeo', self.recordDock.saveGeometry())
+        elif source == self.playToggleBtn:
+            # maybe set NoFocus to everything?
+            if event.type() == QtCore.QEvent.KeyPress:
+                if event.key() == QtCore.Qt.Key_Up:
+                    self.volumeUp()
+                    return True
+                elif event.key() == QtCore.Qt.Key_Down:
+                    self.volumeDown()
+                    return True
+                elif event.key() == QtCore.Qt.Key_Left:
+                    #self.seekBack()
+                    pass
+                elif event.key() == QtCore.Qt.Key_Right:
+                    #self.seekForward()
+                    pass
+                elif not event.key() in (QtCore.Qt.Key_Space, QtCore.Qt.Key_Enter, QtCore.Qt.Key_Return):
+                    return False
+        return super().eventFilter(source, event)
+
+    def keyPressEvent(self, event):
+        if event.key() == QtCore.Qt.Key_M:
+            if self.volume():
+                oldVolume = self.volumeSlider.volume()
+                self.setVolume(0)
+                self.volumeSlider.oldVolume = oldVolume
+            else:
+                self.setVolume(self.volumeSlider.oldVolume if self.volumeSlider.oldVolume else 10)
+        else:
+            super().keyPressEvent(event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self.shown:
+            self.shown = True
+            if self.recordTree.parent() != self.centralWidget():
+                self.setFixedHeight(self.sizeHint().height())
+#            self.recordTree.resizeColumnToContentsm
+
+    def closeEvent(self, event):
+        self.settings.setValue('geometry', self.saveGeometry())
+        self.settings.setValue('recordDockGeo', self.recordDock.saveGeometry())
+        if not self.settings.contains('trayIcon') or self.settings.value('closeToTray', False, type=bool):
+            msgBox = QtWidgets.QMessageBox(
+                QtWidgets.QMessageBox.Question, 
+                'Close RSI Play?', 
+                'Do you want to keep RSIPlay running?', 
+                parent=self
+                )
+            hideToTrayBtn = msgBox.addButton(
+                'Hide to tray', msgBox.AcceptRole)
+            quitOnCloseBtn = msgBox.addButton(
+                'Quit', msgBox.AcceptRole)
+            cancelBtn = msgBox.addButton(
+                'Cancel', msgBox.RejectRole)
+            if not msgBox.exec_() or msgBox.clickedButton() == cancelBtn:
+                event.ignore()
+                return
+            if msgBox.clickedButton() == hideToTrayBtn:
+                self.settings.setValue('closeToTray', True)
+            self.settings.setValue('trayIcon', True)
+        if (self.settings.value('trayIcon', True, type=bool) and
+            (self.settings.value('closeToTray', False, type=bool))):
+                QtWidgets.QApplication.setQuitOnLastWindowClosed(False)
+                self.hideToTray()
+        elif self.recordDock.isVisible():
+            self.recordDock.close()
+#            QtWidgets.QApplication.setQuitOnLastWindowClosed(True)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -790,8 +1150,16 @@ if __name__ == '__main__':
     app = QtWidgets.QApplication(sys.argv)
     app.setOrganizationName('jidesk')
     app.setApplicationName('PlayRSI')
-#    app.setStyle(QtWidgets.QStyleFactory.create('breeze'))
-#    app.setStyle(QtWidgets.QStyleFactory.create('windows'))
+    styles = [s.lower() for s in QtWidgets.QStyleFactory.keys()]
+    if 'oxygen' in styles:
+        style = QtWidgets.QStyleFactory.create('oxygen')
+        app.setStyle(style)
+        if 'breeze' in styles:
+            app.setPalette(QtWidgets.QStyleFactory.create('breeze').standardPalette())
+#    oxygen = QtWidgets.QStyleFactory.create('oxygen')
+#    breeze = QtWidgets.QStyleFactory.create('oxygen')
+#    app.setStyle(oxygen)
+#    app.setPalette(breeze.standardPalette())
     playerWindow = RsiPlayer()
     playerWindow.show()
     sys.exit(app.exec_())
