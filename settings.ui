@@ -1,0 +1,205 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Dialog</class>
+ <widget class="QDialog" name="Dialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>216</width>
+    <height>344</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>RSI - Settings</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout_3">
+   <item>
+    <widget class="QGroupBox" name="groupBox">
+     <property name="title">
+      <string>Default radio</string>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayout">
+      <item>
+       <widget class="QRadioButton" name="lastRadioRadio">
+        <property name="text">
+         <string>Select last used</string>
+        </property>
+        <attribute name="buttonGroup">
+         <string notr="true">defaultRadioGroup</string>
+        </attribute>
+       </widget>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="horizontalLayout">
+        <property name="margin">
+         <number>0</number>
+        </property>
+        <item>
+         <widget class="QRadioButton" name="defaultRadioRadio">
+          <property name="text">
+           <string>Always select</string>
+          </property>
+          <attribute name="buttonGroup">
+           <string notr="true">defaultRadioGroup</string>
+          </attribute>
+         </widget>
+        </item>
+        <item>
+         <widget class="QComboBox" name="defaultRadioCombo">
+          <property name="enabled">
+           <bool>false</bool>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="horizontalLayout_2">
+        <item>
+         <widget class="QLabel" name="label">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Maximum" vsizetype="Preferred">
+            <horstretch>0</horstretch>
+            <verstretch>0</verstretch>
+           </sizepolicy>
+          </property>
+          <property name="text">
+           <string>On start up</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QComboBox" name="playOnStartCombo">
+          <property name="sizeAdjustPolicy">
+           <enum>QComboBox::AdjustToContentsOnFirstShow</enum>
+          </property>
+          <item>
+           <property name="text">
+            <string>restore play state</string>
+           </property>
+          </item>
+          <item>
+           <property name="text">
+            <string>do nothing</string>
+           </property>
+          </item>
+          <item>
+           <property name="text">
+            <string>play live stream</string>
+           </property>
+          </item>
+         </widget>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="trayIconBox">
+     <property name="title">
+      <string>Tray icon</string>
+     </property>
+     <property name="checkable">
+      <bool>true</bool>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayout_2">
+      <item>
+       <widget class="QCheckBox" name="closeToTrayChk">
+        <property name="text">
+         <string>Close to tray</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="startToTrayChk">
+        <property name="text">
+         <string>Start minimized to tray</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QCheckBox" name="storeGeometryChk">
+     <property name="text">
+      <string>Remember geometry</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QCheckBox" name="askToQuitChk">
+     <property name="text">
+      <string>Ask confirmation on quit</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="orientation">
+      <enum>Qt::Horizontal</enum>
+     </property>
+     <property name="standardButtons">
+      <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>buttonBox</sender>
+   <signal>accepted()</signal>
+   <receiver>Dialog</receiver>
+   <slot>accept()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>236</x>
+     <y>301</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>157</x>
+     <y>206</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>buttonBox</sender>
+   <signal>rejected()</signal>
+   <receiver>Dialog</receiver>
+   <slot>reject()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>236</x>
+     <y>301</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>242</x>
+     <y>206</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>defaultRadioRadio</sender>
+   <signal>toggled(bool)</signal>
+   <receiver>defaultRadioCombo</receiver>
+   <slot>setEnabled(bool)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>91</x>
+     <y>80</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>169</x>
+     <y>78</y>
+    </hint>
+   </hints>
+  </connection>
+ </connections>
+ <buttongroups>
+  <buttongroup name="defaultRadioGroup"/>
+ </buttongroups>
+</ui>
