@@ -3,6 +3,7 @@
 import os
 import re
 import json
+from io import FileIO
 from math import sqrt
 import pyaudio
 import numpy as np
@@ -41,6 +42,39 @@ IconSizes = [QtCore.QSize(s, s) for s in (16, 20, 22, 24, 32, 64, 128, 256)]
 
 StartRole = QtCore.Qt.UserRole + 1000
 EndRole = StartRole + 1
+
+
+class MultiFileObject(FileIO):
+    second = None
+    def __init__(self, first, second=None):
+        self.first = open(first, 'rb')
+        if second:
+            self.second = open(second, 'rb')
+
+    def seek(self, pos):
+        pass
+
+    def read(self):
+        data = self.first.read()
+        if self.second:
+            data += self.second.read()
+        return data
+
+    def close(self):
+        self.first.close()
+        if self.second:
+            self.second.close()
+
+
+class MultiReader:
+    def __init__(self, first, second=None):
+        self.reader = MultiFileObject(first, second)
+
+    def __enter__(self):
+        return self.reader
+
+    def __exit__(self, type, value, traceback):
+        self.reader.close()
 
 
 class Player(QtCore.QObject):
@@ -82,15 +116,6 @@ class Player(QtCore.QObject):
     def setRadio(self, radio):
         self.path = self.parent().cacheDirs[radio]
 
-    def getData(self, index, radio=None):
-        if radio is not None:
-            self.setRadio(radio)
-        segment = pydub.AudioSegment.from_file('{}/{}{}{}'.format(
-            self.path, self.pre, index, self.post))
-        data = segment.get_array_of_samples()
-        array = np.array(data).reshape(2, -1, order='F').swapaxes(1, 0)
-        return array
-
     def start(self, index, radio=None):
         print('started?!')
         if not self.stream:
@@ -129,18 +154,26 @@ class Player(QtCore.QObject):
             self.currentData = self.nextData = None
             self.overlapping = False
 
+    def getData(self, index, radio=None, getNext=False):
+        if radio is not None:
+            self.setRadio(radio)
+        segment = pydub.AudioSegment.from_file('{}/{}{}{}'.format(
+            self.path, self.pre, index, self.post))
+        data = segment.get_array_of_samples()
+        array = np.array(data).reshape(2, -1, order='F').swapaxes(1, 0)
+        return array
+
     def getNextData(self):
-#        overlap = 1024
-#        overlap = 256
-        overlap = 2048
-        nextData = self.getData(self.currentIndex + 1)
-#        half = overlap // 2
-#        self.currentData[-overlap:] += nextData[half:half + overlap]
-#        self.nextData = nextData[half + overlap:]
-        self.currentData[-overlap:] += nextData[:overlap]
-        self.nextData = nextData[overlap:]
+        currentFile = '{}/{}{}{}'.format(
+            self.path, self.pre, self.currentIndex, self.post)
+        nextFile = '{}/{}{}{}'.format(
+            self.path, self.pre, self.currentIndex + 1, self.post)
+        with MultiReader(currentFile, nextFile) as f:
+            segment = pydub.AudioSegment.from_file(f)
+        data = segment.get_array_of_samples()
+        print('caricato', segment.frame_count(), len(data), len(np.array(data)))
+        self.nextData = np.array(data).reshape(2, -1, order='F').swapaxes(1, 0)[len(self.currentData):]
         self.overlapping = False
-        print('done', len(self.currentData))
 
     def readData(self, _, frameCount, timeInfo, status):
         data = self.currentData[self.bytePos:self.bytePos + frameCount]
@@ -631,13 +664,70 @@ class RecordModel(QtGui.QStandardItemModel):
     # will be SortFilterProxyModel from filesystem!
     def __init__(self, parent):
         super().__init__(parent)
-        self.getRecordings()
+        self.setHorizontalHeaderLabels(['Network', 'Start', 'End', 'Duration'])
+
+        self.parentIndexes = []
+
+        for radio, (radioName, radioTitle) in enumerate(zip(RadioNames, RadioTitles)):
+            radioItem = QtGui.QStandardItem(radioTitle)
+            radioItem.setIcon(QtGui.QIcon('{}.png'.format(radioName)))
+            radioItem.setFlags(radioItem.flags() & ~ QtCore.Qt.ItemIsEditable)
+            self.appendRow(radioItem)
+            self.parentIndexes.append(self.indexFromItem(radioItem))
+
+        unknownItem = QtGui.QStandardItem('Unknown recordings')
+        unknownItem.setIcon(QtGui.QIcon('unknown.svg'))
+        unknownItem.setFlags(radioItem.flags())
+        self.appendRow(unknownItem)
+        self.unknownItems = self.indexFromItem(unknownItem)
 
     def getRecordings(self):
+        for parent in self.parentIndexes + [self.unknownItems]:
+            if self.rowCount(parent):
+                self.removeRows(0, self.rowCount(parent), parent)
+        recordDir = QtCore.QDir(self.parent().recordDir)
+        if not recordDir.exists():
+            return
+        for fileInfo in recordDir.entryInfoList(['*.aac'], QtCore.QDir.Files):
+            fileName = fileInfo.fileName()
+            if not fileInfo.size():
+                continue
+            try:
+                splitted = fileInfo.fileName().split('-')
+                assert len(splitted) >= 4
+                parent = self.parentIndexes[RadioNames.index(splitted[0].lower())]
+                start = QtCore.QDateTime.fromString(splitted[1], 'yyyyMMddhhmmss')
+                end = QtCore.QDateTime.fromString(splitted[2], 'yyyyMMddhhmmss')
+                duration = start.secsTo(end)
+                name = '-'.join(splitted[3:])
+                if name.endswith('.aac'):
+                    name = name[:-len('.aac')]
+                valid = True
+            except:
+                parent = self.unknownItems
+                start = '?'
+                end = '?'
+                duration = '?'
+                name = fileName
+                valid = False
+            recordItem = QtGui.QStandardItem(name)
+            startItem = QtGui.QStandardItem()
+            startItem.setData(start, QtCore.Qt.DisplayRole)
+            endItem = QtGui.QStandardItem()
+            endItem.setData(start, QtCore.Qt.DisplayRole)
+            durationItem = QtGui.QStandardItem()
+            durationItem.setData(duration, QtCore.Qt.DisplayRole)
+            durationItem.setTextAlignment(QtCore.Qt.AlignRight|QtCore.Qt.AlignVCenter)
+            items = [recordItem, startItem, endItem, durationItem]
+            self.itemFromIndex(parent).appendRow(items)
+            for item in items:
+                if item != recordItem or not valid:
+                    item.setFlags(parent.flags())
+
+    def zgetRecordings(self):
         # clearing will clear the currentIndex, selection and other things...
         # subclass from AbstractItemModel or existing subclasses instead!
         self.clear()
-        self.setHorizontalHeaderLabels(['Network', 'Start', 'End', 'Duration'])
 
         from random import randrange
         self.recordings = [[], [], []]
@@ -795,6 +885,31 @@ class NowPlaying(QtWidgets.QTextBrowser):
         self.refreshBtn.setGeometry(geo)
 
 
+class RecordNameDialog(QtWidgets.QDialog):
+    def __init__(self, parent):
+        super().__init__(parent)
+        layout = QtWidgets.QVBoxLayout(self)
+
+        layout.addWidget(QtWidgets.QLabel('Select recording name'))
+
+        self.nameInput = QtWidgets.QLineEdit('recording')
+        layout.addWidget(self.nameInput)
+
+        self.buttonBox = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok)
+        layout.addWidget(self.buttonBox)
+        self.buttonBox.accepted.connect(self.accept)
+
+    def closeEvent(self, event):
+        event.ignore()
+
+    def rejected(self):
+        pass
+
+    def exec_(self):
+        super().exec_()
+        return self.nameInput.text()
+
+
 class RsiPlayer(QtWidgets.QMainWindow):
     shown = False
 #    recordDockShown = False
@@ -818,6 +933,9 @@ class RsiPlayer(QtWidgets.QMainWindow):
                     self.cacheDirs.append(rootDir.absoluteFilePath(radioDir))
                     if not rootDir.exists(radioDir):
                         rootDir.mkpath(radioDir)
+                self.recordDir = rootDir.absoluteFilePath('recordings')
+                if not rootDir.exists('recordings'):
+                    rootDir.mkpath('recordings')
                 if cd.isWritable():
                     break
         except Exception as e:
@@ -879,6 +997,9 @@ class RsiPlayer(QtWidgets.QMainWindow):
         self.playToggleBtn.toggled.connect(self.togglePlay)
 #        self.playToggleBtn.setFixedHeight(self.seekSlider.minimumHeight())
 
+        self.recordBtn.setIcon(QtGui.QIcon('record.svg'))
+        self.recordBtn.toggled.connect(self.toggleRecord)
+
         self.seekSlider.valueChanged.connect(self.seekSliderMoved)
         self.seekSlider.sliderReleased.connect(self.seek)
         self.delaySeekTimer = QtCore.QTimer(singleShot=True, interval=250, timeout=self.seek)
@@ -893,6 +1014,7 @@ class RsiPlayer(QtWidgets.QMainWindow):
         self.songLogs = [[], [], []]
         self.timeStamps = [[], [], []]
         self.nextToPlay = None
+        self.recordStart = None
 
         self.manager = QtNetwork.QNetworkAccessManager()
         self.manager.finished.connect(self.networkReply)
@@ -918,7 +1040,7 @@ class RsiPlayer(QtWidgets.QMainWindow):
         self.recordTree = QtWidgets.QTreeView()
         self.recordModel = RecordModel(self)
         self.recordTree.setModel(self.recordModel)
-        self.recordTree.setEditTriggers(self.recordTree.NoEditTriggers)
+#        self.recordTree.setEditTriggers(self.recordTree.NoEditTriggers)
         self.recordTree.header().setStretchLastSection(False)
         self.recordTree.header().setDefaultAlignment(QtCore.Qt.AlignCenter)
         self.recordTree.setItemDelegateForColumn(3, DurationDelegate())
@@ -1013,6 +1135,8 @@ class RsiPlayer(QtWidgets.QMainWindow):
 
     def toggleWindow(self):
         if self.isVisible():
+            if self.settings.value('storeGeometry', True, type=bool):
+                self.settings.setValue('geometry', self.saveGeometry())
             self.hide()
         else:
             self.show()
@@ -1071,6 +1195,7 @@ class RsiPlayer(QtWidgets.QMainWindow):
             self.trayMenu.exec_(QtGui.QCursor.pos())
 
     def loadRecordings(self):
+        self.recordModel.getRecordings()
         self.recordTree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         self.recordTree.header().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
         self.recordTree.header().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
@@ -1137,10 +1262,88 @@ class RsiPlayer(QtWidgets.QMainWindow):
             self.loadPlaylist(requestSongLog=True)
             self.playlistRequestTimer.start()
         else:
+            if self.recordBtn.isChecked() and QtWidgets.QMessageBox.question(self, 
+                'Stop recording?', 'Recording in process, do you want to stop?', 
+                QtWidgets.QMessageBox.Ok|QtWidgets.QMessageBox.Cancel) != QtWidgets.QMessageBox.Ok:
+                    self.playToggleBtn.blockSignals(True)
+                    self.playToggleBtn.setChecked(True)
+                    self.playToggleBtn.blockSignals(False)
+                    return
+            self.recordBtn.setChecked(False)
             self.player.pause()
             self.timeStampTimer.stop()
         if self.seekSlider.value() == self.seekSlider.maximum():
             self.liveBtn.setDown(play)
+        self.recordBtn.setEnabled(play)
+
+    def toggleRecord(self, rec):
+        if rec:
+            self.recordStart = self.player.currentIndex
+        else:
+            if QtWidgets.QMessageBox.question(self, 
+                'Stop recording?', 'Recording in process, do you want to stop?', 
+                QtWidgets.QMessageBox.Ok|QtWidgets.QMessageBox.Cancel) != QtWidgets.QMessageBox.Ok:
+                    self.recordBtn.blockSignals(True)
+                    self.recordBtn.setChecked(True)
+                    self.recordBtn.blockSignals(False)
+                    return
+            start = self.recordStart
+            self.recordStart = None
+            self.createRecording(self.lastRadio, start, self.player.currentIndex)
+
+        self.seekSlider.setDisabled(rec)
+        self.timeEdit.setDisabled(rec)
+        self.nowPlaying.setDisabled(rec)
+        self.liveBtn.setDisabled(rec)
+        for btn in self.radioGroup.buttons():
+            btn.setDisabled(rec)
+
+    def createRecording(self, radio, start, end):
+        files = []
+        cacheFiles = self.cache[radio]
+        for index in range(start, end + 1):
+            files.append(cacheFiles.get(index))
+        if not all(files):
+            print('missing recordings!')
+            return
+
+        timeStamps = iter(reversed(self.timeStamps[radio]))
+        startTime = endTime = None
+        t = QtCore.QDateTime.currentDateTime()
+        while not all((startTime, endTime)):
+            length, index = next(timeStamps)
+            if index == end + 1:
+                endTime = t.addMSecs(-length)
+            t = t.addMSecs(-length)
+            if index == start:
+                startTime = t
+
+        fmt = 'yyyyMMddhhmmss'
+
+        baseName = '{radio}-{startTime}-{endTime}-'.format(
+            radio = RadioNames[radio], 
+            startTime = startTime.toString(fmt), 
+            endTime = endTime.toString(fmt), 
+            )
+        recordName = RecordNameDialog(self).exec_()
+        fileName = '{}{}.aac'.format(baseName, recordName)
+        newIndex = 0
+        while QtCore.QDir(self.recordDir).exists(fileName):
+            newIndex += 1
+            fileName = '{}{}-{}.aac'.format(baseName, recordName, newIndex)
+        recFilePath = QtCore.QDir(self.recordDir).absoluteFilePath(fileName)
+#        recFilePath = cacheDir.absoluteFilePath(fileName)
+        cacheDir = QtCore.QDir(self.cacheDirs[radio])
+        with open(recFilePath, 'wb') as recFile:
+            for sourceName in files:
+                cacheDir.absoluteFilePath(fileName)
+                sourcePath = cacheDir.absoluteFilePath(sourceName)
+                with open(sourcePath, 'rb') as source:
+                    recFile.write(source.read())
+        
+        self.togglePanelBtn.setChecked(True)
+        self.panel.setCurrentWidget(self.recordTree)
+        self.recordModel.getRecordings()
 
     def goLive(self):
         self.seekSlider.setValue(self.seekSlider.maximum())
@@ -1335,11 +1538,13 @@ class RsiPlayer(QtWidgets.QMainWindow):
 #            contents = [r.decode('utf-8') for r in data.split(b'\n') if r.strip() and not r.lstrip().startswith(b'#')]
             if self.liveBtn.isDown():
                 reordered = fileNames[-3:] + fileNames[-6:-3]
+                cacheDir = QtCore.QDir(self.cacheDirs[radio])
                 for fileName in reordered:
                     if not self.nextToPlay and self.player.currentState != self.player.ActiveState:
                         self.nextToPlay = BaseStreamUrl.format(radioName) + fileName
     #                remoteFileName = f.decode('utf-8')
-                    filePath = self.cacheDirs[radio] + fileName
+#                    filePath = self.cacheDirs[radio] + fileName
+                    filePath = cacheDir.absoluteFilePath(fileName)
                     if not QtCore.QFile.exists(filePath):
                         urlPath = BaseStreamUrl.format(radioName) + fileName
                         if not urlPath in self.queue:
@@ -1554,7 +1759,7 @@ class RsiPlayer(QtWidgets.QMainWindow):
     def volumeDown(self):
         self.stepVolume(-VolumeStep)
 
-    def seekAmount(self, amount):
+    def seekAmount(self, amount=1):
         amount *= self.settings.value('seekAmount', 2, type=int)
         self.seekSlider.setValue(self.seekSlider.value() + amount)
         self.seek()
