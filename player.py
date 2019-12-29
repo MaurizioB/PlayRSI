@@ -43,6 +43,47 @@ IconSizes = [QtCore.QSize(s, s) for s in (16, 20, 22, 24, 32, 64, 128, 256)]
 StartRole = QtCore.Qt.UserRole + 1000
 EndRole = StartRole + 1
 
+RecStart = QtGui.QPainterPath()
+RecStart.moveTo(1, 1)
+RecStart.lineTo(1, 14)
+RecStart.moveTo(2, 7.5)
+RecStart.lineTo(14, 7.5)
+RecStart.lineTo(10, 3.5)
+RecStart.moveTo(14, 7.5)
+RecStart.lineTo(10, 11.5)
+
+#RecEnd = QtGui.QTransform().rotate(180).translate(-15, -15).map(RecStart)
+RecEnd = QtGui.QPainterPath()
+RecEnd.moveTo(14, 1)
+RecEnd.lineTo(14, 14)
+RecEnd.moveTo(1, 7.5)
+RecEnd.lineTo(12, 7.5)
+RecEnd.lineTo(8, 3.5)
+RecEnd.moveTo(12, 7.5)
+RecEnd.lineTo(8, 11.5)
+
+def createIcon(iconPath, iconSize):
+    size = min(iconSize.width(), iconSize.height())
+    scale = size / 16
+    transform = QtGui.QTransform().scale(scale, scale)
+    path = transform.map(iconPath)
+    pen = QtGui.QPen()
+    pen.setWidth(max(2, scale))
+    icon = QtGui.QIcon()
+    palette = QtWidgets.QApplication.palette()
+    for mode in (0, 1):
+        pen.setColor(palette.color(mode, palette.WindowText))
+        pm = QtGui.QPixmap(iconSize)
+        pm.fill(QtCore.Qt.transparent)
+        qp = QtGui.QPainter(pm)
+        qp.setRenderHints(qp.Antialiasing)
+        qp.translate(.5, .5)
+        qp.setPen(QtGui.QPen(pen))
+        qp.drawPath(path)
+        qp.end()
+        icon.addPixmap(pm, mode)
+    return icon
+
 
 class MultiFileObject(FileIO):
     second = None
@@ -443,11 +484,13 @@ class SeekSlider(QtWidgets.QWidget):
         self.hourMinuteWidth = self.hourWidth * 2 + fm.width(':')
 
         self.topMargin = fm.height()
+        self.settingRecStart = self.settingRecEnd = False
+        self._recStart = self._recEnd = -1
 
         self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, self)
         self.slider.setFocusPolicy(QtCore.Qt.NoFocus)
         self.slider.valueChanged.connect(self.update)
-        self.slider.valueChanged.connect(self.valueChanged)
+        self.slider.valueChanged.connect(self.checkValue)
         self.actionTriggered = self.slider.actionTriggered
         self.sliderReleased = self.slider.sliderReleased
         self.sliderMoved = self.slider.sliderMoved
@@ -467,6 +510,43 @@ class SeekSlider(QtWidgets.QWidget):
         palette = self.palette()
         self.halfPen = palette.color(palette.Dark)
         self.quarterPen = palette.color(palette.Mid)
+
+    def beginRecStart(self):
+        self.settingRecStart = True
+        self.settingRecEnd = False
+        self._recStart = self.value()
+
+    def recStart(self):
+        return self._recStart
+
+    def setRecStart(self):
+        self._recStart = self.value()
+
+    def beginRecEnd(self):
+        self.settingRecStart = False
+        self.settingRecEnd = True
+        self._recEnd = max(1, self.value())
+
+    def endRecRange(self):
+        self.settingRecStart = self.settingRecEnd = False
+
+    def reset(self):
+        self.endRecRange()
+        self._recStart = self._recEnd = -1
+
+    def recEnd(self):
+        return self._recEnd
+
+    def setRecEnd(self):
+        self._recEnd = self.value()
+
+    def checkValue(self, value):
+        if self.settingRecStart and self._recEnd >= 0 and value > self._recEnd:
+            self.slider.setSliderPosition(self._recEnd)
+        elif self.settingRecEnd and self._recStart >= 0 and value < self._recStart:
+            self.slider.setSliderPosition(self._recStart)
+        else:
+            self.valueChanged.emit(value)
 
     def updateLabelPositions(self):
         timeReference = self.window().timeReference()
@@ -567,23 +647,34 @@ class SeekSlider(QtWidgets.QWidget):
 #        print(self.parent(), self.window().timeStamps)
 
         timeStamps = self.window().timeStamps[self.window().lastRadio]
+        grooveSize = (self.maxTick - self.minTick) / 2160
         if timeStamps:
             cacheData = self.window().cache[self.window().lastRadio]
-            cacheSize = (self.maxTick - self.minTick) / 2160
-            cacheRect = QtCore.QRectF(0, 0, cacheSize, self.topMargin)
+            cacheRect = QtCore.QRectF(0, 0, grooveSize, self.topMargin)
             qp.save()
             qp.setRenderHints(qp.Antialiasing)
             qp.setPen(QtCore.Qt.NoPen)
             qp.setBrush(self.cacheBackground)
-            qp.translate(self.maxTick - cacheSize, 0)
+            qp.translate(self.maxTick - grooveSize, 0)
             c = 0
             for length, index in reversed(timeStamps):
                 if index in cacheData:
                     qp.drawRect(cacheRect)
-                qp.translate(-cacheSize, 0)
+                qp.translate(-grooveSize, 0)
                 c += 1
                 if c > 2160:
                     break
+            qp.restore()
+
+        if self._recStart >= 0:
+            recRect = QtCore.QRectF(self.minTick + self._recStart * grooveSize, 0, 1, self.topMargin)
+            if self._recEnd > self._recStart:
+                recRect.setWidth((self._recEnd - self._recStart) * grooveSize)
+#            recRect.moveLeft(self.minTick)
+            qp.save()
+            qp.setPen(QtCore.Qt.NoPen)
+            qp.setBrush(QtCore.Qt.red)
+            qp.drawRect(recRect)
             qp.restore()
 
         if self.hourSize >= 48:
@@ -656,8 +747,8 @@ class DurationDelegate(QtWidgets.QStyledItemDelegate):
         mins, secs = divmod(secs, 60)
         hours, mins = divmod(mins, 60)
         if hours:
-            return '{}:{:02}:{:02}'.format(hours, mins, secs)
-        return '{:02}:{:02}'.format(mins, secs)
+            return '{}:{:02}:{:02}"'.format(hours, mins, secs)
+        return '{:02}:{:02}"'.format(mins, secs)
 
 
 class RecordModel(QtGui.QStandardItemModel):
@@ -764,44 +855,84 @@ class RecordModel(QtGui.QStandardItemModel):
         
 
 
-class ExpandButton(QtWidgets.QToolButton):
-    arrowSize = None
+class ExpandButton(QtWidgets.QPushButton):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def resizeEvent(self, event):
-        if self.arrowSize is None:
-            opt = QtWidgets.QStyleOptionToolButton()
-            self.initStyleOption(opt)
-            size = self.style().pixelMetric(QtWidgets.QStyle.PM_ButtonIconSize, opt, self)
-            resSize = size / 4
-            self.__class__.arrowSize = size
-            rect = QtCore.QRectF(0, 0, size, size)
-            rect.adjust(resSize, resSize, -resSize, -resSize)
-            center = rect.center()
-
-            self.__class__.bottomPath = bottomPath = QtGui.QPainterPath()
-            bottomPath.moveTo(rect.topLeft())
-            bottomPath.lineTo(rect.topRight())
-            bottomPath.lineTo(center.x(), rect.bottom())
-            bottomPath.translate(-bottomPath.boundingRect().center())
-            bottomPath.closeSubpath()
-
-            self.__class__.topPath = topPath = QtGui.QPainterPath()
-            topPath.moveTo(rect.bottomLeft())
-            topPath.lineTo(rect.bottomRight())
-            topPath.lineTo(center.x(), center.y() - resSize)
-            topPath.translate(-topPath.boundingRect().center())
-            topPath.closeSubpath()
-
     def paintEvent(self, event):
         super().paintEvent(event)
+#        qp = QtGui.QPainter(self)
+#        qp.drawRect(self.rect().adjusted(0, 0, -1, -1))
+#        fullRect = self.rect()
+        style = self.style()
+        opt = QtWidgets.QStyleOptionButton()
+        self.initStyleOption(opt)
+        contents = style.subElementRect(style.SE_PushButtonContents, opt, self)
+        contents.adjust(1, 1, -1, -1)
+
+        spacing = 120
+        mid = spacing / 2
+        width = contents.width() - 4
+        count = width // spacing
+        left = (width - spacing * count) / 2
+
+        arrowSize = max((contents.height() - 5) * .5, 3)
+
+        arrowPath = QtGui.QPainterPath()
+        if self.isChecked():
+            arrowPath.moveTo(-arrowSize * 1.5, arrowSize)
+            arrowPath.lineTo(0, -arrowSize)
+            arrowPath.lineTo(arrowSize * 1.5, arrowSize)
+        else:
+            arrowPath.moveTo(-arrowSize * 1.5, -arrowSize)
+            arrowPath.lineTo(0, arrowSize)
+            arrowPath.lineTo(arrowSize * 1.5, -arrowSize)
+
         qp = QtGui.QPainter(self)
         qp.setRenderHints(qp.Antialiasing)
-        qp.translate(QtCore.QRectF(self.rect()).center())
-        qp.setPen(QtCore.Qt.NoPen)
-        qp.setBrush(self.palette().color(QtGui.QPalette.Text))
-        qp.drawPath(self.bottomPath if self.isChecked() else self.topPath)
+        qp.setPen(QtGui.QPen(self.palette().color(QtGui.QPalette.Text), 2))
+        qp.translate(.5, contents.top() + contents.height() * .5 + .5)
+        while left + spacing < width:
+            qp.drawPath(arrowPath.translated(left + mid, 0))
+            left += spacing
+
+#    arrowSize = None
+#    def __init__(self, *args, **kwargs):
+#        super().__init__(*args, **kwargs)
+#
+#    def resizeEvent(self, event):
+#        if self.arrowSize is None:
+#            opt = QtWidgets.QStyleOptionToolButton()
+#            self.initStyleOption(opt)
+#            size = self.style().pixelMetric(QtWidgets.QStyle.PM_ButtonIconSize, opt, self)
+#            resSize = size / 4
+#            self.__class__.arrowSize = size
+#            rect = QtCore.QRectF(0, 0, size, size)
+#            rect.adjust(resSize, resSize, -resSize, -resSize)
+#            center = rect.center()
+#
+#            self.__class__.bottomPath = bottomPath = QtGui.QPainterPath()
+#            bottomPath.moveTo(rect.topLeft())
+#            bottomPath.lineTo(rect.topRight())
+#            bottomPath.lineTo(center.x(), rect.bottom())
+#            bottomPath.translate(-bottomPath.boundingRect().center())
+#            bottomPath.closeSubpath()
+#
+#            self.__class__.topPath = topPath = QtGui.QPainterPath()
+#            topPath.moveTo(rect.bottomLeft())
+#            topPath.lineTo(rect.bottomRight())
+#            topPath.lineTo(center.x(), center.y() - resSize)
+#            topPath.translate(-topPath.boundingRect().center())
+#            topPath.closeSubpath()
+#
+#    def paintEvent(self, event):
+#        super().paintEvent(event)
+#        qp = QtGui.QPainter(self)
+#        qp.setRenderHints(qp.Antialiasing)
+#        qp.translate(QtCore.QRectF(self.rect()).center())
+#        qp.setPen(QtCore.Qt.NoPen)
+#        qp.setBrush(self.palette().color(QtGui.QPalette.Text))
+#        qp.drawPath(self.bottomPath if self.isChecked() else self.topPath)
 
 
 class SettingsDialog(QtWidgets.QDialog):
@@ -997,9 +1128,6 @@ class RsiPlayer(QtWidgets.QMainWindow):
         self.playToggleBtn.toggled.connect(self.togglePlay)
 #        self.playToggleBtn.setFixedHeight(self.seekSlider.minimumHeight())
 
-        self.recordBtn.setIcon(QtGui.QIcon('record.svg'))
-        self.recordBtn.toggled.connect(self.toggleRecord)
-
         self.seekSlider.valueChanged.connect(self.seekSliderMoved)
         self.seekSlider.sliderReleased.connect(self.seek)
         self.delaySeekTimer = QtCore.QTimer(singleShot=True, interval=250, timeout=self.seek)
@@ -1007,7 +1135,23 @@ class RsiPlayer(QtWidgets.QMainWindow):
 
         self.liveBtn.clicked.connect(self.goLive)
 
-        self.queue = []
+        self.recordBtn.setIcon(QtGui.QIcon('record.svg'))
+        self.recordBtn.toggled.connect(self.toggleRecord)
+
+        self.toggleRecPanelBtn.setIcon(QtGui.QIcon('clock.svg'))
+        self.toggleRecPanelBtn.toggled.connect(self.toggleRecPanel)
+
+        iconSize = self.recStartBtn.iconSize()
+        self.recStartBtn.setVisible(False)
+        self.recStartBtn.setIcon(createIcon(RecStart, iconSize))
+        self.recStartBtn.toggled.connect(self.checkRecordButtons)
+        self.recStartBtn.toggled.connect(self.setRecStart)
+        self.recEndBtn.setVisible(False)
+        self.recEndBtn.setIcon(createIcon(RecEnd, iconSize))
+        self.recEndBtn.toggled.connect(self.checkRecordButtons)
+        self.recEndBtn.toggled.connect(self.setRecEnd)
+
+        self.queue = {}
         self.requestIndexQueue = []
         self.cache = [{}, {}, {}]
         self.contents = [{}, {}, {}]
@@ -1133,6 +1277,14 @@ class RsiPlayer(QtWidgets.QMainWindow):
             QtWidgets.QApplication.processEvents()
             self.setFixedHeight(self.height() - height - self.mainLayout.verticalSpacing())
 
+    def toggleRecPanel(self, show):
+        self.recStartBtn.setVisible(show)
+        self.recEndBtn.setVisible(show)
+        self.checkRecordButtons()
+        timedRecording = show or self.toggleRecPanelBtn.isChecked() and self.canRecord()
+        self.recordBtn.setEnabled(timedRecording)
+        self.seekSlider.endRecRange()
+
     def toggleWindow(self):
         if self.isVisible():
             if self.settings.value('storeGeometry', True, type=bool):
@@ -1230,8 +1382,46 @@ class RsiPlayer(QtWidgets.QMainWindow):
         if self.lastRadio >= 0:
             self.updateTrayIcon()
 
+    def canRecord(self):
+        return self.toggleRecPanelBtn.isChecked() and (
+            self.seekSlider.recStart() >= 0 and self.seekSlider.recEnd() > self.seekSlider.recStart())
+
+    def setRecStart(self, recStart):
+        self.seekSlider.beginRecStart()
+
+    def setRecEnd(self, recEnd):
+        self.seekSlider.beginRecEnd()
+
+    def checkRecordButtons(self):
+        if not self.toggleRecPanelBtn.isChecked():
+            return
+        elif self.recStartBtn.isEnabled() and self.recEndBtn.isEnabled():
+            if self.sender() == self.recStartBtn and self.recStartBtn.isChecked():
+                self.recEndBtn.blockSignals(True)
+                self.recEndBtn.setChecked(False)
+                self.recEndBtn.blockSignals(False)
+                self.seekSlider.setRecStart()
+            elif self.recEndBtn.isChecked():
+                self.recStartBtn.blockSignals(True)
+                self.recStartBtn.setChecked(False)
+                self.recStartBtn.blockSignals(False)
+                self.seekSlider.setRecEnd()
+        
+        if self.seekSlider.value() == self.seekSlider.maximum():
+            self.recStartBtn.setEnabled(False)
+            self.recEndBtn.setEnabled(False)
+        else:
+            self.recStartBtn.setEnabled(True)
+            self.recEndBtn.setEnabled(True)
+            if self.recStartBtn.isChecked():
+                self.seekSlider.setRecStart()
+#            print(self.seekSlider.recStart() >= 0, self.seekSlider.recEnd() < 0)
+#            if self.seekSlider.recStart() >= 0 and self.seekSlider.recEnd() < 0:
+#                self.recEndBtn.setEnabled(True)
+
     def seekSliderMoved(self, value):
         self.liveBtn.setDown(value == self.seekSlider.maximum() and self.playToggleBtn.isChecked())
+        self.checkRecordButtons()
 
     def seekTriggered(self, action):
         if action in (QtWidgets.QSlider.SliderPageStepSub, QtWidgets.QSlider.SliderPageStepAdd):
@@ -1274,10 +1464,21 @@ class RsiPlayer(QtWidgets.QMainWindow):
             self.timeStampTimer.stop()
         if self.seekSlider.value() == self.seekSlider.maximum():
             self.liveBtn.setDown(play)
-        self.recordBtn.setEnabled(play)
+        self.recordBtn.setEnabled(play or self.toggleRecPanelBtn.isChecked() and self.canRecord())
 
     def toggleRecord(self, rec):
         if rec:
+            if self.toggleRecPanelBtn.isChecked() and self.seekSlider.recStart() >= 0 and self.seekSlider.recEnd() > self.seekSlider.recStart():
+                self.recordStart = None
+                radio = self.lastRadio
+                start = self.timeStamps[radio][self.seekSlider.recStart()][1]
+                end = self.timeStamps[radio][self.seekSlider.recEnd()][1]
+                self.createRecording(radio, start, end)
+                self.seekSlider.reset()
+                self.recordBtn.blockSignals(True)
+                self.recordBtn.setChecked(False)
+                self.recordBtn.blockSignals(False)
+                return
             self.recordStart = self.player.currentIndex
         else:
             if QtWidgets.QMessageBox.question(self, 
@@ -1300,10 +1501,17 @@ class RsiPlayer(QtWidgets.QMainWindow):
 
     def createRecording(self, radio, start, end):
         files = []
+        missing = []
         cacheFiles = self.cache[radio]
         for index in range(start, end + 1):
-            files.append(cacheFiles.get(index))
-        if not all(files):
+            cacheFile = cacheFiles.get(index)
+            if not cacheFile:
+                missing.append(index)
+            files.append(cacheFile)
+        if missing:
+            for miss in missing:
+                self.requestIndex(miss)
+            QtCore.QTimer.singleShot(250, lambda: self.createRecording(radio, start, end))
             print('missing recordings!')
             return
 
@@ -1472,6 +1680,31 @@ class RsiPlayer(QtWidgets.QMainWindow):
 #            print('request header', n, req.header(h))
 #        print('chiedo song list?', url, logRequestUrl, self.manager.get(req))
 
+    def downloadProgress(self, received, total):
+        url = self.sender().url().toString()
+        if not url in self.queue:
+            print('wtf?!', url, self.queue)
+            return
+        self.queue[url][0] = received
+        self.queue[url][1] = total
+        r = t = 0
+        for u in self.queue.values():
+            r += u[0]
+            t += u[1]
+        self.statusBar().showMessage('Downloading {}/{}kB {}%'.format(
+            r // 1024, 
+            t // 1024, 
+            int(r / t * 100)), 1000)
+
+    def requestFile(self, urlPath):
+#        .downloadProgress.connect(self.downloadProgress)
+#        self.queue.append(urlPath)
+        if urlPath in self.queue:
+            return
+        self.queue[urlPath] = [0, 0]
+        req = QtNetwork.QNetworkRequest(QtCore.QUrl(urlPath))
+        self.manager.get(req).downloadProgress.connect(self.downloadProgress)
+
     def requestIndex(self, index):
         if not index in self.cache[self.lastRadio]:
             print('file non in cache')
@@ -1482,9 +1715,10 @@ class RsiPlayer(QtWidgets.QMainWindow):
                 self.requestIndexQueue.insert(0, index)
             else:
                 print('file da scaricare')
-                self.queue.append(urlPath)
-                req = QtNetwork.QNetworkRequest(QtCore.QUrl(urlPath))
-                self.manager.get(req)
+                self.requestFile(urlPath)
+#                self.queue.append(urlPath)
+#                req = QtNetwork.QNetworkRequest(QtCore.QUrl(urlPath))
+#                self.manager.get(req)
 
     def networkReply(self, reply):
         if reply.error() != QtNetwork.QNetworkReply.NoError:
@@ -1548,9 +1782,12 @@ class RsiPlayer(QtWidgets.QMainWindow):
                     if not QtCore.QFile.exists(filePath):
                         urlPath = BaseStreamUrl.format(radioName) + fileName
                         if not urlPath in self.queue:
-                            self.queue.append(urlPath)
-                            req = QtNetwork.QNetworkRequest(QtCore.QUrl(urlPath))
-                            self.manager.get(req)
+                            self.requestFile(urlPath)
+                    elif self.nextToPlay and self.nextToPlay.endswith(fileName):
+                        self.goToIndex(int(FindIndexRegEx.findall(fileName)[-1]))
+#                            self.queue.append(urlPath)
+#                            req = QtNetwork.QNetworkRequest(QtCore.QUrl(urlPath))
+#                            self.manager.get(req)
                 if self.player.currentState != self.player.ActiveState:
                     QtCore.QTimer.singleShot(1000, self.loadPlaylist)
             elif (self.playToggleBtn.isChecked() and self.player.currentState != self.player.ActiveState and 
@@ -1588,9 +1825,10 @@ class RsiPlayer(QtWidgets.QMainWindow):
                 toRemove.append(index)
                 urlPath = self.contents[radio][index]
                 if not urlPath in self.queue:
-                    self.queue.append(urlPath)
-                    req = QtNetwork.QNetworkRequest(QtCore.QUrl(urlPath))
-                    self.manager.get(req)
+                    self.requestFile(urlPath)
+#                    self.queue.append(urlPath)
+#                    req = QtNetwork.QNetworkRequest(QtCore.QUrl(urlPath))
+#                    self.manager.get(req)
             while toRemove:
                 self.requestIndexQueue.remove(toRemove.pop())
         elif url.startswith(SongLogBaseUrl):
@@ -1612,7 +1850,7 @@ class RsiPlayer(QtWidgets.QMainWindow):
             if not url in self.queue:
                 print('wtf?', url)
                 return
-            self.queue.remove(url)
+            self.queue.pop(url)
             filePath = QtCore.QDir(self.cacheDirs[radio]).absoluteFilePath(fileName)
             f = QtCore.QFile(filePath)
             f.open(f.WriteOnly)
@@ -1732,9 +1970,10 @@ class RsiPlayer(QtWidgets.QMainWindow):
             print('not yet')
             urlPath = self.contents[self.lastRadio][index]
             if not urlPath in self.queue:
-                self.queue.append(urlPath)
-                req = QtNetwork.QNetworkRequest(QtCore.QUrl(urlPath))
-                self.manager.get(req)
+                self.requestFile(urlPath)
+#                self.queue.append(urlPath)
+#                req = QtNetwork.QNetworkRequest(QtCore.QUrl(urlPath))
+#                self.manager.get(req)
             self.nextToPlay = urlPath
 #            QtCore.QTimer.singleShot(100, lambda: self.goToIndex(index))
 #            filePath = self.cacheDirs[self.lastRadio] + fileName
