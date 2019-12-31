@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>216</width>
+    <width>214</width>
     <height>344</height>
    </rect>
   </property>
@@ -97,6 +97,20 @@
     </widget>
    </item>
    <item>
+    <widget class="QCheckBox" name="storeGeometryChk">
+     <property name="text">
+      <string>Remember player geometry</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QCheckBox" name="askToQuitChk">
+     <property name="text">
+      <string>Ask confirmation on quit</string>
+     </property>
+    </widget>
+   </item>
+   <item>
     <widget class="QGroupBox" name="trayIconBox">
      <property name="title">
       <string>Tray icon</string>
@@ -120,20 +134,6 @@
        </widget>
       </item>
      </layout>
-    </widget>
-   </item>
-   <item>
-    <widget class="QCheckBox" name="storeGeometryChk">
-     <property name="text">
-      <string>Remember geometry</string>
-     </property>
-    </widget>
-   </item>
-   <item>
-    <widget class="QCheckBox" name="askToQuitChk">
-     <property name="text">
-      <string>Ask confirmation on quit</string>
-     </property>
     </widget>
    </item>
    <item>

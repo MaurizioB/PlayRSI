@@ -25,15 +25,21 @@ FindIndexRegEx = re.compile('\d+')
 BaseStreamUrl = 'https://lsaplus.swisstxt.ch/audio/{}_96.stream/'
 PlaylistFileName = 'chunklist_DVR.m3u8'
 SongLogBaseUrl = 'https://www.rsi.ch/play/radio/songlog/'
+NowAndNextBaseUrl = 'https://www.rsi.ch/play/radio/now-and-next/'
+#'https://www.rsi.ch/play/radio/now-and-next/rete-due?livestreamId=livestream_ReteDue'
 
 ShortRadioNames = 'uno', 'due', 'tre'
 RadioNames = []
+RadioNamesHypen = []
 RadioTitles = []
 SongLogUrls = []
+NowAndNextUrls = []
 for n in ShortRadioNames:
     RadioNames.append('rete{}'.format(n))
+    RadioNamesHypen.append('rete-{}'.format(n))
     RadioTitles.append('Rete{}'.format(n.title()))
     SongLogUrls.append('{}rete-{}'.format(SongLogBaseUrl, n))
+    NowAndNextUrls.append('{}rete-{}'.format(NowAndNextBaseUrl, n))
 #    RadioNames = tuple('rete{}'.format(n) for n in ShortRadioNames)
 #    RadioTitles = tuple('Rete{}'.format(n.title()) for n in ShortRadioNames)
 #    SongLogUrls = ['{}rete-{}/'.format(SongLogBaseUrl, ShortRadioNames[radio])]
@@ -42,6 +48,7 @@ IconSizes = [QtCore.QSize(s, s) for s in (16, 20, 22, 24, 32, 64, 128, 256)]
 
 StartRole = QtCore.Qt.UserRole + 1000
 EndRole = StartRole + 1
+RecordFileRole = QtCore.Qt.UserRole + 1500
 
 RecStart = QtGui.QPainterPath()
 RecStart.moveTo(1, 1)
@@ -324,7 +331,7 @@ class VolumeSlider(QtWidgets.QWidget):
         self.slider.setValue(100)
         self.slider.setTickPosition(self.slider.TicksBothSides)
         self.slider.setTickInterval(25)
-        self.slider.setFixedWidth(80)
+#        self.slider.setFixedWidth(180)
         self.slider.valueChanged.connect(self.volumeChanged)
         self.slider.valueChanged.connect(self.updateVolume)
         self.volume = self.slider.value
@@ -341,6 +348,8 @@ class VolumeSlider(QtWidgets.QWidget):
         else:
             self.absoluteClickButton = None
 
+        self.setAdjustedSliderSize()
+
         self.expandAnimation = QtCore.QParallelAnimationGroup(self)
         self.expandAnimation.addAnimation(QtCore.QPropertyAnimation(self, b"minimumWidth"))
         self.expandAnimation.addAnimation(QtCore.QPropertyAnimation(self, b"maximumWidth"))
@@ -348,9 +357,29 @@ class VolumeSlider(QtWidgets.QWidget):
             ani = self.expandAnimation.animationAt(a)
             ani.setDuration(100)
             ani.setStartValue(self.baseWidth)
-            ani.setEndValue(self.baseWidth + 82)
+            ani.setEndValue(self.baseWidth + 2 + self.slider.width())
 
         self.leaveTimer = QtCore.QTimer(singleShot=True, interval=500, timeout=self.collapse)
+
+    def setAdjustedSliderSize(self):
+        # adjust the slider size so that the 50% value is mouse-cursor-wise;
+        # this function is used only once, but it's separated for readability
+        width = 80
+        self.slider.setFixedWidth(width)
+        opt = QtWidgets.QStyleOptionSlider()
+        value = 0
+        while True:
+            self.slider.initStyleOption(opt)
+            style = self.slider.style()
+            available = style.pixelMetric(style.PM_SliderSpaceAvailable, opt, self.slider)
+            pos = style.sliderPositionFromValue(self.slider.minimum(), self.slider.maximum(), 
+                50, available)
+            value = style.sliderValueFromPosition(self.slider.minimum(), self.slider.maximum(), 
+                pos, available)
+            if value == 50:
+                return width
+            width += 1
+            self.slider.setFixedWidth(width)
 
     def updateVolume(self, volume):
         self.oldVolume = volume
@@ -495,6 +524,7 @@ class SeekSlider(QtWidgets.QWidget):
         self.sliderReleased = self.slider.sliderReleased
         self.sliderMoved = self.slider.sliderMoved
         self.slider.installEventFilter(self)
+        self.minimum = self.slider.minimum
         self.maximum = self.slider.maximum
         self.value = self.slider.value
         self.setValue = self.slider.setValue
@@ -802,6 +832,7 @@ class RecordModel(QtGui.QStandardItemModel):
                 name = fileName
                 valid = False
             recordItem = QtGui.QStandardItem(name)
+            recordItem.setData(fileInfo, RecordFileRole)
             startItem = QtGui.QStandardItem()
             startItem.setData(start, QtCore.Qt.DisplayRole)
             endItem = QtGui.QStandardItem()
@@ -1054,6 +1085,7 @@ class RsiPlayer(QtWidgets.QMainWindow):
         cacheDirs = QtCore.QStandardPaths.standardLocations(
             QtCore.QStandardPaths.AppDataLocation)
         self.cacheDirs = []
+#        self.cacheDataDir = QtCore.QDir(QtCore.QStandardPaths.AppDataLocation)
         try:
             for cacheDir in cacheDirs:
                 cd = QtCore.QFileInfo(cacheDir)
@@ -1065,6 +1097,9 @@ class RsiPlayer(QtWidgets.QMainWindow):
                     if not rootDir.exists(radioDir):
                         rootDir.mkpath(radioDir)
                 self.recordDir = rootDir.absoluteFilePath('recordings')
+                self.cacheDataDir = QtCore.QDir(rootDir.absoluteFilePath('cache'))
+                if not self.cacheDataDir.exists():
+                    rootDir.mkpath('cache')
                 if not rootDir.exists('recordings'):
                     rootDir.mkpath('recordings')
                 if cd.isWritable():
@@ -1113,6 +1148,8 @@ class RsiPlayer(QtWidgets.QMainWindow):
         self.radioGroup.setId(self.rete2Btn, 1)
         self.radioGroup.setId(self.rete3Btn, 2)
         self.radioGroup.buttonToggled[QtWidgets.QAbstractButton, bool].connect(self.setRadio)
+        # TODO: move to the following, but be aware that goLive should not use the *last* file
+#        self.radioGroup.buttonToggled[QtWidgets.QAbstractButton, bool].connect(lambda r, s: [self.setRadio(r, s), self.goLive()])
 
         self.settingsBtn.setIcon(QtGui.QIcon('settings.svg'))
         self.settingsBtn.setFixedSize(40, 40)
@@ -1152,11 +1189,13 @@ class RsiPlayer(QtWidgets.QMainWindow):
         self.recEndBtn.toggled.connect(self.setRecEnd)
 
         self.queue = {}
+        self.cacheQueue = []
         self.requestIndexQueue = []
         self.cache = [{}, {}, {}]
         self.contents = [{}, {}, {}]
         self.songLogs = [[], [], []]
         self.timeStamps = [[], [], []]
+        self.nowAndNext = [{}, {}, {}]
         self.nextToPlay = None
         self.recordStart = None
 
@@ -1188,6 +1227,8 @@ class RsiPlayer(QtWidgets.QMainWindow):
         self.recordTree.header().setStretchLastSection(False)
         self.recordTree.header().setDefaultAlignment(QtCore.Qt.AlignCenter)
         self.recordTree.setItemDelegateForColumn(3, DurationDelegate())
+        self.recordTree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.recordTree.customContextMenuRequested.connect(self.recordTreeMenu)
         self.loadRecordings()
 
         self.panel.addTab(self.recordTree, QtGui.QIcon('record.svg'), '&Recordings')
@@ -1263,6 +1304,36 @@ class RsiPlayer(QtWidgets.QMainWindow):
 
         self.togglePanelBtn.toggled.connect(self.togglePanel)
 
+    def recordTreeMenu(self, pos):
+        index = self.recordTree.indexAt(pos)
+        if not index.parent().isValid() or not index.data(RecordFileRole) or not index.data(RecordFileRole).size():
+            return
+        menu = QtWidgets.QMenu(self)
+        saveAsAction = menu.addAction(QtGui.QIcon('save.svg'), 'Save as...')
+        exportAction = menu.addAction(QtGui.QIcon('export.svg'), 'Export file...')
+        exportAction.setEnabled(False)
+        menu.addSeparator()
+        deleteAction = menu.addAction(QtGui.QIcon('delete.svg'), 'Delete file')
+        res = menu.exec_(QtGui.QCursor.pos())
+        if res == saveAsAction:
+            filePath, filter = QtWidgets.QFileDialog.getSaveFileName(self, 'Save recording', filter='AAC file (*.aac)')
+            if filePath:
+                try:
+                    QtCore.QFile(index.data(RecordFileRole).absoluteFilePath()).copy(filePath)
+                except Exception as e:
+                    print('error copying!', e)
+        elif res == exportAction:
+            print('esporta')
+        elif res == deleteAction and QtWidgets.QMessageBox.critical(self, 'Delete recording?', 
+            'Are you sure you want to delete the selected recording?\nThe operation cannot be undone!!!', 
+            QtWidgets.QMessageBox.Ok|QtWidgets.QMessageBox.Cancel) == QtWidgets.QMessageBox.Ok:
+                try:
+                    assert QtCore.QFile(index.data(RecordFileRole).absoluteFilePath()).remove()
+                    self.recordModel.getRecordings()
+                except Exception as e:
+                    print('error removing!', e)
+        
+
     def togglePanel(self, show):
         if show:
             self.setMinimumHeight(0)
@@ -1283,7 +1354,10 @@ class RsiPlayer(QtWidgets.QMainWindow):
         self.checkRecordButtons()
         timedRecording = show or self.toggleRecPanelBtn.isChecked() and self.canRecord()
         self.recordBtn.setEnabled(timedRecording)
-        self.seekSlider.endRecRange()
+        if show and self.seekSlider.recStart() < 0:
+            self.seekSlider.beginRecStart()
+        else:
+            self.seekSlider.endRecRange()
 
     def toggleWindow(self):
         if self.isVisible():
@@ -1301,7 +1375,7 @@ class RsiPlayer(QtWidgets.QMainWindow):
             self.toggleWindowAction.setText('Show player')
         self.toggleWindowAction.setIcon(self.showIcons[not self.isVisible()])
         for radio, action in enumerate(self.sysTrayRadioGroup.actions()):
-            action.setChecked(self.liveBtn.isDown() and self.lastRadio == radio)
+            action.setChecked(self.playToggleBtn.isChecked() and self.lastRadio == radio)
         isPlaying = self.player.currentState == self.player.ActiveState
         self.togglePlayAction.setIcon(self.playIcons[not isPlaying])
         self.togglePlayAction.setText('Pause' if isPlaying else 'Play')
@@ -1554,6 +1628,7 @@ class RsiPlayer(QtWidgets.QMainWindow):
         self.recordModel.getRecordings()
 
     def goLive(self):
+        # uhmm... not the maximum, maybe?
         self.seekSlider.setValue(self.seekSlider.maximum())
         self.playToggleBtn.setChecked(True)
         self.seek()
@@ -1661,6 +1736,8 @@ class RsiPlayer(QtWidgets.QMainWindow):
         req = QtNetwork.QNetworkRequest(QtCore.QUrl(SongLogUrls[radio]))
         self.manager.get(req)
         self.songLogRequestElapsed.start()
+        req = QtNetwork.QNetworkRequest(QtCore.QUrl(NowAndNextUrls[radio]))
+        self.manager.get(req)
 
     def loadPlaylist(self, requestSongLog=False):
         print('loadPlaylist')
@@ -1846,6 +1923,51 @@ class RsiPlayer(QtWidgets.QMainWindow):
                 self.reloadLog()
             except Exception as e:
                 print('Song log not parsed!', e)
+        elif url.startswith(NowAndNextBaseUrl):
+            data = data.decode('utf-8')
+            try:
+                for radio, radioName in enumerate(RadioNamesHypen):
+                    if radioName in url:
+                        break
+                else:
+                    raise BaseException('radio not found?!')
+                nowAndNext = json.loads(data)['programItems']
+                now = QtCore.QDateTime.currentDateTime()
+                for program in nowAndNext:
+                    time = QtCore.QTime.fromString(program['startTime'].split(' ')[-1])
+                    assert time.isValid()
+                    if time > now.time().addSecs(43200):
+                        time = QtCore.QDateTime(now.date().addDays(-1), time)
+                    else:
+                        time = QtCore.QDateTime(now.date(), time)
+                    title = program['title']
+                    try:
+                        imageUrl = program.get('imageUrl')
+                        imageFileName = QtCore.QUrl(imageUrl).fileName()
+                        if not self.cacheDataDir.exists(imageFileName) and imageUrl not in self.cacheQueue:
+                            self.cacheQueue.append(imageUrl)
+                            req = QtNetwork.QNetworkRequest(QtCore.QUrl(imageUrl))
+                            self.manager.get(req)
+                        print('image', program.get('imageUrl'))
+#                            
+                    except:
+                        imageFileName = ''
+                    self.nowAndNext[radio][time] = {'title': title, 'image': imageFileName}
+                self.reloadLog()
+            except Exception as e:
+                print('now and next not loaded? ({})'.format(e), data)
+        elif url in self.cacheQueue:
+            self.cacheQueue.remove(url)
+            pixmap = QtGui.QPixmap()
+            pixmap.loadFromData(data)
+            filePath = self.cacheDataDir.absoluteFilePath(fileName)
+            pixmap.scaledToWidth(140, QtCore.Qt.SmoothTransformation).save(filePath, quality=100)
+            
+#            f = QtCore.QFile(filePath)
+#            f.open(f.WriteOnly)
+#            f.write(data)
+#            f.close()
+            self.reloadLog()
         else:
             if not url in self.queue:
                 print('wtf?', url)
@@ -1874,7 +1996,8 @@ class RsiPlayer(QtWidgets.QMainWindow):
 #        print('reply!', url.endswith(PlaylistFileName))
 
     def reloadLog(self):
-        html = '<xhtml><body>'
+        vPos = self.nowPlaying.verticalScrollBar().value()
+        html = u'<xhtml><body>'
         for song in self.songLogs[self.lastRadio]:
             artist = song.get('artist')
             if isinstance(artist, dict):
@@ -1885,7 +2008,7 @@ class RsiPlayer(QtWidgets.QMainWindow):
             title = song.get('title', '(no title)')
             displayTime = song.get('displayTimeOfPlayback')
             realTime = song.get('timeOfPlayback')
-            html += '''
+            html += u'''
                 <a href="radio/{radio}/{realTime}">
                 {displayTime}: {title} - {artist}
                 </a><br/>
@@ -1896,8 +2019,101 @@ class RsiPlayer(QtWidgets.QMainWindow):
                 title = title, 
                 artist = artist, 
                 )
+
+        nowAndNext = self.nowAndNext[self.lastRadio]
+        if nowAndNext:
+            keys = sorted(nowAndNext.keys())
+            if len(keys) > 2:
+                html += u'<br/><b>Previously:</b><br/>'
+                limit = QtCore.QDateTime.currentDateTime().addSecs(-21600)
+                prev = []
+                for time in keys[:-2]:
+                    if time < limit:
+                        continue
+                    program = nowAndNext[time]
+                    imageFile = program.get('image')
+                    href = 'radio/{radio}/{time}'.format(
+                        radio = self.lastRadio, 
+                        time = time.toString('hh:mm:ss'))
+                    if imageFile and self.cacheDataDir.exists(imageFile):
+                        prev.append(u'''
+                            <table><tr>
+                            <td><a href="{href}">{image}</a></td>
+                            <td><a href="{href}">{title}</a></td>
+                            </tr></table><br/>
+                        '''.format(
+                            href = href, 
+                            image = '<img src="{}">'.format(self.cacheDataDir.absoluteFilePath(imageFile)), 
+                            title = program.get('title', 'Unknown'))
+                            )
+                    else:
+                        prev.append(u'''
+                            <a href="{href}">{title}</a><br/>
+                        '''.format(
+                            href = href, 
+                            title = program.get('title', 'Unknown'))
+                            )
+                html += u'<br/>'.join(prev)
+
+            html += '<br/><b>Now:</b><br/>'
+            current = nowAndNext[keys[-2]]
+            href = 'radio/{radio}/{time}'.format(
+                radio = self.lastRadio, 
+                time = keys[-2].toString('hh:mm:ss'))
+            imageFile = current.get('image')
+            if imageFile and self.cacheDataDir.exists(imageFile):
+                html += u'''
+                    <table><tr>
+                    <td><a href="{href}">{image}</a></td>
+                    <td><a href="{href}">{title} ({time})</a></td>
+                    </tr></table><br/>
+                    '''.format(
+                        href = href, 
+                        image = '<img src="{}">'.format(self.cacheDataDir.absoluteFilePath(imageFile)), 
+                        title = current.get('title', 'Unknown'), 
+                        time = keys[-2].toString('hh:mm')
+                        )
+            else:
+                html += u'''
+                    <a href="{href}">{title} ({time})</a><br/>
+                    '''.format(
+                        href = href, 
+                        title = current.get('title', 'Unknown'), 
+                        time = keys[-2].toString('hh:mm')
+                        )
+#            timeHref = '<a href="radio/{radio}/{realTime}">{image}'.format(
+#                radio=self.lastRadio, 
+#                realTime = realTime, 
+#                image = image)
+#            html += u'{}{} ({})</a><br/>'.format(
+#                timeHref, 
+#                current.get('title', 'Unknown'), 
+#                keys[-2].toString('hh:mm')
+#                )
+
+            html += '<br/><b>Next:</b><br/>'
+            isNext = nowAndNext[keys[-1]]
+            imageFile = isNext.get('image')
+            if imageFile and self.cacheDataDir.exists(imageFile):
+                html += u'''
+                    <table><tr>
+                    <td>{image}</td>
+                    <td>{title} ({time})</td>
+                    </tr></table><br/>
+                    '''.format(
+                        image = '<img src="{}">'.format(self.cacheDataDir.absoluteFilePath(imageFile)), 
+                        title = isNext.get('title', 'Unknown'), 
+                        time = keys[-1].toString('hh:mm')
+                        )
+            else:
+                html += u'{title} ({time})<br/>'.format(
+                    title = isNext.get('title', 'Unknown'), 
+                    time = keys[-1].toString('hh:mm')
+                    )
+
         html += '</body></xhtml>'
         self.nowPlaying.setHtml(html)
+        self.nowPlaying.verticalScrollBar().setValue(vPos)
 
     def goToTime(self):
         self.timeEdit.lineEdit().deselect()
@@ -1944,10 +2160,12 @@ class RsiPlayer(QtWidgets.QMainWindow):
             length, index = next(timeIter)
             now = now.addMSecs(-length)
             sliderPos -= 1
-        print(now)
-        self.setRadio(radio)
-        self.goToIndex(index)
-        self.seekSlider.setValue(sliderPos)
+        try:
+            self.setRadio(radio)
+            self.goToIndex(index)
+            self.seekSlider.setValue(sliderPos)
+        except Exception as e:
+            print('index error!', url)
 
     def goToIndex(self, index):
         print('go to index', index)
