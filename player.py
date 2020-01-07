@@ -1943,12 +1943,14 @@ class RsiPlayer(QtWidgets.QMainWindow):
                     title = program['title']
                     try:
                         imageUrl = program.get('imageUrl')
-                        imageFileName = QtCore.QUrl(imageUrl).fileName()
+                        imageFileName = QtCore.QUrl(imageUrl).fileName().rstrip('.jpg').rstrip('.jpeg')
+                        if not imageFileName.endswith('.png'):
+                            imageFileName += u'.png'
                         if not self.cacheDataDir.exists(imageFileName) and imageUrl not in self.cacheQueue:
                             self.cacheQueue.append(imageUrl)
                             req = QtNetwork.QNetworkRequest(QtCore.QUrl(imageUrl))
                             self.manager.get(req)
-                        print('image', program.get('imageUrl'))
+#                        print('image', program.get('imageUrl'))
 #                            
                     except:
                         imageFileName = ''
@@ -1960,13 +1962,11 @@ class RsiPlayer(QtWidgets.QMainWindow):
             self.cacheQueue.remove(url)
             pixmap = QtGui.QPixmap()
             pixmap.loadFromData(data)
+            fileName = fileName.rstrip('.jpg').rstrip('.jpeg')
+            if not fileName.endswith('.png'):
+                fileName += u'.png'
             filePath = self.cacheDataDir.absoluteFilePath(fileName)
-            pixmap.scaledToWidth(140, QtCore.Qt.SmoothTransformation).save(filePath, quality=100)
-            
-#            f = QtCore.QFile(filePath)
-#            f.open(f.WriteOnly)
-#            f.write(data)
-#            f.close()
+            pixmap.scaledToWidth(140, QtCore.Qt.SmoothTransformation).save(filePath)
             self.reloadLog()
         else:
             if not url in self.queue:
@@ -2057,6 +2057,7 @@ class RsiPlayer(QtWidgets.QMainWindow):
 
             html += '<br/><b>Now:</b><br/>'
             current = nowAndNext[keys[-2]]
+            title = current.get('title', 'Unknown')
             href = 'radio/{radio}/{time}'.format(
                 radio = self.lastRadio, 
                 time = keys[-2].toString('hh:mm:ss'))
@@ -2065,12 +2066,12 @@ class RsiPlayer(QtWidgets.QMainWindow):
                 html += u'''
                     <table><tr>
                     <td><a href="{href}">{image}</a></td>
-                    <td><a href="{href}">{title} ({time})</a></td>
+                    <td><a href="{href}">{time}<hr/>{title}</a></td>
                     </tr></table><br/>
                     '''.format(
                         href = href, 
                         image = '<img src="{}">'.format(self.cacheDataDir.absoluteFilePath(imageFile)), 
-                        title = current.get('title', 'Unknown'), 
+                        title = title, 
                         time = keys[-2].toString('hh:mm')
                         )
             else:
@@ -2078,7 +2079,7 @@ class RsiPlayer(QtWidgets.QMainWindow):
                     <a href="{href}">{title} ({time})</a><br/>
                     '''.format(
                         href = href, 
-                        title = current.get('title', 'Unknown'), 
+                        title = title, 
                         time = keys[-2].toString('hh:mm')
                         )
 #            timeHref = '<a href="radio/{radio}/{realTime}">{image}'.format(
@@ -2097,8 +2098,8 @@ class RsiPlayer(QtWidgets.QMainWindow):
             if imageFile and self.cacheDataDir.exists(imageFile):
                 html += u'''
                     <table><tr>
-                    <td>{image}</td>
-                    <td>{title} ({time})</td>
+                    <td><a name="next">{image}</a></td>
+                    <td>{time}<hr/>{title}</td>
                     </tr></table><br/>
                     '''.format(
                         image = '<img src="{}">'.format(self.cacheDataDir.absoluteFilePath(imageFile)), 
@@ -2114,6 +2115,39 @@ class RsiPlayer(QtWidgets.QMainWindow):
         html += '</body></xhtml>'
         self.nowPlaying.setHtml(html)
         self.nowPlaying.verticalScrollBar().setValue(vPos)
+
+#        doc = self.nowPlaying.document()
+#        imageFound = None
+#        block = doc.begin()
+#        while block.isValid():
+##            print('block >', block.text())
+#            print('block >')
+#            it = block.begin()
+##            print(it)
+#            while not it.atEnd():
+#                fragment = it.fragment()
+#                fmt = fragment.charFormat()
+#                if fmt.isImageFormat():
+#                    imageFound = doc.documentLayout().blockBoundingRect(block)
+##                    print(doc.documentLayout().blockBoundingRect(block), fmt.anchorNames(), fmt.anchorHref())
+##                else:
+##                    print(fragment.text(), fragment.text() == u'\u200c')
+##                    if imageFound and fmt.anchorNames():
+##                        print('yeah', fmt.anchorNames(), imageFound, fragment.text())
+##                        imageFound = None
+##                    print(doc.documentLayout().blockBoundingRect(block), fmt.anchorNames(), fmt.anchorHref())
+##                    break
+##                    layout = block.layout()
+##                    print(layout.boundingRect().translated(layout.position()))
+##                    break
+##                    fmt = fmt.toImageFormat()
+##                    if fmt.isValid() and not fmt.width():
+##                        pass
+##                    print('immagine!', fmt.name(), fmt.width())
+##                print('fragment', fragment.text(), int(fragment.charFormat().objectType()))
+#                it += 1
+##                fragment = it.fragment()
+#            block = block.next()
 
     def goToTime(self):
         self.timeEdit.lineEdit().deselect()
