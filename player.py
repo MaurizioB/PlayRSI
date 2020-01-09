@@ -5,10 +5,17 @@ import re
 import json
 from io import FileIO
 from math import sqrt
+from collections import namedtuple
 import pyaudio
 import numpy as np
 import pydub
 from PyQt5 import QtCore, QtGui, QtWidgets, QtNetwork, uic
+
+SegmentInfo = namedtuple('SegmentInfo', 'file length')
+NetworkErrors = {}
+for _k, _v in QtNetwork.QNetworkReply.__dict__.items():
+    if isinstance(_v, QtNetwork.QNetworkReply.NetworkError):
+        NetworkErrors[_v] = _k
 
 if os.environ.get('XDG_CURRENT_DESKTOP'):
     if os.environ['XDG_CURRENT_DESKTOP'].strip().lower() == 'kde':
@@ -92,6 +99,21 @@ def createIcon(iconPath, iconSize):
     return icon
 
 
+def checkDir(dirName, parentDir=None):
+    if parentDir:
+        dirPath = parentDir.absoluteFilePath(dirName)
+        if ((parentDir.exists(dirName) and not QtCore.QFileInfo(dirPath).isWritable()) or 
+            not parentDir.mkpath(dirName)):
+                return
+        return QtCore.QDir(dirPath)
+    else:
+        dirObj = QtCore.QDir(dirName)
+        if ((dirObj.exists() and not QtCore.QFileInfo(dirObj.absolutePath()).isWritable()) or
+            not dirObj.mkpath('./')):
+                return
+        return dirObj
+
+
 class MultiFileObject(FileIO):
     second = None
     def __init__(self, first, second=None):
@@ -125,13 +147,14 @@ class MultiReader:
         self.reader.close()
 
 
-class Player(QtCore.QObject):
+class AudioPlayer(QtCore.QObject):
     ActiveState, SuspendedState, StoppedState, IdleState = range(4)
     currentStateChanged = QtCore.pyqtSignal(int)
     request = QtCore.pyqtSignal(int)
 
     def __init__(self, parent):
         super().__init__(parent)
+        self.cache = parent.cache
         self.pyaudio = pyaudio.PyAudio()
         self.stream = None
         self.nextData = None
@@ -162,10 +185,11 @@ class Player(QtCore.QObject):
         self.post = post
 
     def setRadio(self, radio):
-        self.path = self.parent().cacheDirs[radio]
+        self.radio = radio
+#        self.pathDir = self.parent().cacheDirs[radio]
 
     def start(self, index, radio=None):
-        print('started?!')
+        print('starting from {}?!'.format(index))
         if not self.stream:
             self.stream = self.pyaudio.open(
                 format=8, channels=2, rate=44100, 
@@ -182,8 +206,9 @@ class Player(QtCore.QObject):
             self.bytePos = 0
             self.stream.start_stream()
             self.currentState = self.ActiveState
-            self.request.emit(index + 1)
+#            self.request.emit(index + 1)
             self.overlapping = False
+        self.cache.fetchIndex(self.radio, index + 1)
 
     def pause(self):
         if self.stream:
@@ -202,20 +227,29 @@ class Player(QtCore.QObject):
             self.currentData = self.nextData = None
             self.overlapping = False
 
-    def getData(self, index, radio=None, getNext=False):
+    def getData(self, index, radio=None):
         if radio is not None:
             self.setRadio(radio)
-        segment = pydub.AudioSegment.from_file('{}/{}{}{}'.format(
-            self.path, self.pre, index, self.post))
+#        segment = pydub.AudioSegment.from_file('{}/{}{}{}'.format(
+#            self.path, self.pre, index, self.post))
+        segment = pydub.AudioSegment.from_file(self.cache.getPathFromIndex(self.radio, index))
         data = segment.get_array_of_samples()
         array = np.array(data).reshape(2, -1, order='F').swapaxes(1, 0)
         return array
 
     def getNextData(self):
-        currentFile = '{}/{}{}{}'.format(
-            self.path, self.pre, self.currentIndex, self.post)
-        nextFile = '{}/{}{}{}'.format(
-            self.path, self.pre, self.currentIndex + 1, self.post)
+#        currentFile = '{}/{}{}{}'.format(
+#            self.path, self.pre, self.currentIndex, self.post)
+#        nextFile = '{}/{}{}{}'.format(
+#            self.path, self.pre, self.currentIndex + 1, self.post)
+        currentFile = self.cache.getPathFromIndex(self.radio, self.currentIndex)
+        nextFile = self.cache.getPathFromIndex(self.radio, self.currentIndex + 1)
+        if nextFile is None:
+            self.cache.fetchIndex(self.radio, self.currentIndex + 1)
+            QtCore.QTimer.singleShot(100, self.getNextData)
+            print('next index {} does not exist yet, retry in a bit...'.format(self.currentIndex + 1))
+            return
+        print('muxing?', currentFile, nextFile)
         with MultiReader(currentFile, nextFile) as f:
             segment = pydub.AudioSegment.from_file(f)
         data = segment.get_array_of_samples()
@@ -230,8 +264,8 @@ class Player(QtCore.QObject):
 #            self.currentState = self.StoppedState
 #            return None, pyaudio.paComplete
         dataLen = len(data)
-        if dataLen < frameCount:
-            print('troppo corto, accodo prossimo chunk', self.bytePos)
+        if dataLen < frameCount and not self.overlapping:
+            print('troppo corto, accodo prossimo chunk', self.currentIndex + 1, self.bytePos)
             self.currentIndex += 1
             self.currentData = self.nextData
             self.nextData = None
@@ -244,13 +278,14 @@ class Player(QtCore.QObject):
                 print('no data!')
                 self.currentState = self.StoppedState
                 return None, pyaudio.paComplete
-            self.request.emit(self.currentIndex + 1)
+#            QtCore.QTimer.singleShot(8000, lambda i=self.currentIndex + 1: self.cache.fetchIndex(i))
+#            self.request.emit(self.currentIndex + 1)
         else:
             self.bytePos += frameCount
             if self.bytePos + frameCount * 100 > len(self.currentData) and self.nextData is None and not self.overlapping:
                 self.overlapping = True
+                print('overlapping!!!\n')
                 QtCore.QTimer.singleShot(0, self.getNextData)
-                print('overlapping', len(self.currentData))
 #                nextData = self.getData(self.currentIndex + 1)
 #                self.currentData[-1024:] += nextData[:1024]
 #                print('done', len(self.currentData))
@@ -1072,6 +1107,331 @@ class RecordNameDialog(QtWidgets.QDialog):
         return self.nameInput.text()
 
 
+class Cache(QtCore.QObject):
+#    playlistReceived = QtCore.pyqtSignal(int)
+    downloadStatusUpdate = QtCore.pyqtSignal(int, int, int)
+    segmentDownloaded = QtCore.pyqtSignal(int, int)
+    segmentNotify = QtCore.pyqtSignal(int, int)
+    cacheCleared = QtCore.pyqtSignal(int, int)
+
+    def __init__(self, parent):
+        super().__init__(parent)
+
+        self.manager = parent.manager
+        self.cacheDirsPaths = parent.cacheDirPaths
+        self.cacheDirs = parent.cacheDirs
+
+        self.settings = QtCore.QSettings()
+        self.clearCacheTimer = QtCore.QTimer(singleShot=True, timeout=self.clearCache)
+
+        self.downloadQueue = {}
+        self.indexToFile = [{}, {}, {}]
+        self.timeStamps = [[], [], []]
+        self.playlistActiveDownload = [False, False, False]
+        self.playlistLoadingTime = [None, None, None]
+        self.isRecording = False
+        self.playlistCoolDownTimers = []
+        for r in range(3):
+            t = QtCore.QElapsedTimer()
+            self.playlistCoolDownTimers.append(t)
+            t.start()
+
+        self.clearCache()
+
+    def clearCache(self):
+        if self.isRecording:
+            self.clearCacheTimer.start(60000)
+            return
+        self.toRemove = 0
+        self.removed = 0
+        sizeLimit = self.settings.value('cacheSizeLimit', 0, type=int)
+        timeLimit = self.settings.value('cacheTimeLimit', 1, type=int)
+        remaining = 0
+        if sizeLimit:
+            # size limit is in megabytes!
+            sizeLimit *= 1048576
+            radioSizeLimit = sizeLimit // 3
+            totalSize = 0
+            for radio, cacheDir in enumerate(self.cacheDirs):
+                cacheDict = {f.file:i for i, f in self.indexToFile[radio].items()}
+                radioSize = 0
+                for fileInfo in cacheDir.entryInfoList(cacheDir.Files):
+                    size = fileInfo.size()
+                    radioSize += fileInfo.size()
+                    if radioSize > radioSizeLimit:
+                        self.toRemove += 1
+                        if cacheDir.remove(fileInfo.fileName()):
+                            try:
+                                cacheDict.pop(fileInfo.fileName())
+                            except:
+                                print('file not in contents')
+                            self.removed += 1
+                            continue
+                    totalSize += size
+            if totalSize:
+                # 10 seconds files are about 120000 bytes
+                # it should be // 120000, but we're using milliseconds
+                remaining = max(60000, (sizeLimit - totalSize) // 120)
+        if timeLimit:
+            # time limit is in hours!
+            remaining = timeLimit * 3600000
+            tooOld = QtCore.QDateTime.currentDateTime().addSecs(-timeLimit * 3600)
+            for radio, cacheDir in enumerate(self.cacheDirs):
+                cacheDict = {f.file:i for i, f in self.indexToFile[radio].items()}
+                for fileInfo in cacheDir.entryInfoList(cacheDir.Files):
+                    if fileInfo.lastModified() < tooOld:
+                        self.toRemove += 1
+                        if cacheDir.remove(fileInfo.fileName()):
+                            try:
+                                cacheDict.pop(fileInfo.fileName())
+                            except:
+                                print('file not in contents')
+                            self.removed += 1
+        if remaining:
+            self.clearCacheTimer.start(remaining)
+        if self.toRemove:
+            self.cacheCleared.emit(self.toRemove, self.removed)
+
+    def isTimePossible(self, radio, time):
+        now = QtCore.QDateTime.currentDateTime()
+        if isinstance(time, QtCore.QTime):
+            time = QtCore.QDateTime(QtCore.QDate.currentDate(), time)
+            if time > now:
+                time = time.addSecs(-86400)
+            if not self.indexToFile[radio]:
+                return False
+        currentTime = self.playlistLoadingTime[radio]
+        contents = self.indexToFile[radio]
+        for index, info in sorted(contents.items(), key=lambda i: i[0], reverse=True):
+            currentTime = currentTime.addMSecs(-info.length)
+            if currentTime <= time:
+                info = self.indexToFile[radio].get(index)
+                if info:
+                    if self.cacheDirs[radio].exists(info.file):
+                        return True
+                    
+                print('file {} does not exist!'.format(index))
+                self.fetchIndex(radio, index)
+#        print('aghoieherh', time)
+#        return False
+
+    def downloadPlaylist(self, radio, **kwargs):
+        if self.playlistActiveDownload[radio] and not kwargs:
+            return
+        coolDown = self.playlistCoolDownTimers[radio]
+        if coolDown.elapsed() < 1000:
+            QtCore.QTimer.singleShot(max(0, 1000 - coolDown.elapsed()), lambda: self.downloadPlaylist(radio, **kwargs))
+            return
+        coolDown.start()
+        self.playlistActiveDownload[radio] = True
+        url = BaseStreamUrl.format(RadioNames[radio]) + PlaylistFileName
+        req = QtNetwork.QNetworkRequest(QtCore.QUrl(url))
+        reply = self.manager.get(req)
+        reply.setProperty('radio', radio)
+        requestTime = kwargs.get('requestTime')
+        reply.setProperty('requestTime', requestTime if requestTime else QtCore.QDateTime.currentDateTime())
+        reply.setProperty('waitingIndex', kwargs.get('waitingIndex'))
+        reply.finished.connect(self.playlistDownloadFinished)
+        reply.error.connect(self.playlistDownloadError)
+
+    def playlistDownloadError(self, code):
+        reply = self.sender()
+        print('error downloading playlist for radio {}'.format(RadioNames[reply.property('radio')]), int(code))
+        requestTime = reply.property('requestTime')
+        if requestTime < QtCore.QDateTime.currentDateTime().addSecs(-60):
+            print('too much has passed, ignore')
+            return
+        QtCore.QTimer.singleShot(1000, lambda: 
+                self.downloadPlaylist(reply.property('radio'), 
+                    requestTime=requestTime, 
+                    waitingIndex=reply.property('waitingIndex')))
+
+    def playlistDownloadFinished(self):
+        reply = self.sender()
+        if reply.error():
+            return
+        radio = reply.property('radio')
+        self.playlistActiveDownload[radio] = False
+        self.playlistLoadingTime[radio] = reply.property('requestTime')
+
+        contentDict = self.indexToFile[radio]
+
+        data = bytes((reply.readAll()))
+        raw = iter(data.decode('utf-8').split('\n'))
+        while True:
+            try:
+                line = next(raw)
+                if line.startswith('#'):
+                    if line.startswith('#EXTINF:'):
+                        lastLength = int(float(line[len('#EXTINF:'):].rstrip(',')) * 1000)
+                elif line:
+                    fileName = line.strip()
+                    index = int(FindIndexRegEx.findall(fileName)[-1])
+                    if not index in contentDict:
+                        contentDict[index] = SegmentInfo(fileName, lastLength)
+            except:
+                break
+
+        waitingIndex = reply.property('waitingIndex')
+        if waitingIndex is not None:
+            indexes = sorted(self.indexToFile[radio].keys())
+            if waitingIndex == -1 or waitingIndex == indexes[-1]:
+                # the next segment might not be ready after 10 seconds,
+                # so we prefer playing the next-to-last
+                waitingIndex = indexes[-2]
+            elif waitingIndex < 0:
+                # I'm too lazy to compute the "delta", but I might need to do that
+                try:
+                    waitingIndex = indexes[waitingIndex]
+                except:
+                    waitingIndex[0]
+            self.fetchIndex(radio, waitingIndex, notify=True)
+            self.fetchIndex(radio, waitingIndex + 1)
+
+    def downloadIndex(self, radio, index, **kwargs):
+        url = BaseStreamUrl.format(RadioNames[radio]) + self.indexToFile[radio][index].file
+        if url in self.downloadQueue:
+            print('still downloading, ignore')
+            return
+        self.downloadQueue[url] = [0, 0]
+        req = QtNetwork.QNetworkRequest(QtCore.QUrl(url))
+        reply = self.manager.get(req)
+        reply.setProperty('radio', radio)
+        reply.setProperty('index', index)
+        if kwargs.get('notify'):
+            reply.setProperty('notify', True)
+        requestTime = kwargs.get('requestTime')
+        reply.setProperty('requestTime', requestTime if requestTime else QtCore.QDateTime.currentDateTime())
+        reply.downloadProgress.connect(self.segmentDownloadProgress)
+        reply.finished.connect(self.segmentDownloadFinished)
+        reply.error.connect(self.segmentDownloadError)
+
+    def segmentDownloadProgress(self, received, total):
+        reply = self.sender()
+        self.downloadQueue[reply.url().toString()] = [received, total]
+        r = t = 0
+        for sr, st in self.downloadQueue.values():
+            r += sr
+            t += st
+        self.downloadStatusUpdate.emit(r, t, len(self.downloadQueue))
+
+    def segmentDownloadError(self, code):
+        reply = self.sender()
+        self.downloadQueue.pop(reply.url().toString())
+        radio = reply.property('radio')
+        index = reply.property('index')
+        print('error downloading file {} for radio {}: {}'.format(
+            index, RadioNames[radio], NetworkErrors[code]))
+        requestTime = reply.property('requestTime')
+        if requestTime < QtCore.QDateTime.currentDateTime().addSecs(-60):
+            print('too much has passed, ignore')
+            return
+        QtCore.QTimer.singleShot(1000, lambda: 
+                self.downloadIndex(radio, index, 
+                    notify=reply.property('notify', requestTime=requestTime) ))
+
+    def segmentDownloadFinished(self):
+        reply = self.sender()
+        if reply.error():
+            return
+        radio = reply.property('radio')
+        self.downloadQueue.pop(reply.url().toString())
+        fileName = reply.url().fileName()
+        filePath = self.cacheDirs[radio].absoluteFilePath(fileName)
+        f = QtCore.QFile(filePath)
+        f.open(f.WriteOnly)
+        f.write(bytes((reply.readAll())))
+        f.close()
+        index = reply.property('index')
+        self.segmentDownloaded.emit(radio, index)
+        if reply.property('notify'):
+            self.segmentNotify.emit(radio, index)
+        print('index {} downloaded!'.format(index))
+
+    def fetchIndex(self, radio, index, notify=False):
+        info = self.indexToFile[radio].get(index)
+        if not info:
+            print('index {} does not exist, downloading playlist again'.format(index))
+#            self.downloadPlaylist(radio, waitingIndex=index)
+            self.downloadPlaylist(radio)
+            return
+        elif not self.cacheDirs[radio].exists(info.file):
+            self.downloadIndex(radio, index, notify=notify)
+            print('downloading index {}'.format(index))
+            return
+        elif notify:
+            self.segmentNotify.emit(radio, index)
+        print('index {} exists!'.format(index))
+        self.segmentDownloaded.emit(radio, index)
+
+    def getPathFromIndex(self, radio, index, getNext=False):
+        if getNext:
+            QtCore.QTimer.singleShot(0, lambda: self.fetchIndex(radio, index))
+        info = self.indexToFile[radio].get(index)
+        if info and self.cacheDirs[radio].exists(info.file):
+            return self.cacheDirs[radio].absoluteFilePath(info.file)
+        print('file {} does not exist!'.format(index))
+        self.fetchIndex(radio, index)
+#        if info:
+#            # cache file *should* exist...
+#            return True
+
+    def getIndexFromTime(self, radio, time, callback=None):
+        contents = self.indexToFile[radio]
+        lastTime = self.playlistLoadingTime[radio]
+        now = QtCore.QDateTime.currentDateTime()
+        minTime = now.addSecs(-21600)
+        if not contents or lastTime.secsTo(now) > 60:
+            self.downloadPlaylist(radio)
+            print('playlist not loaded or too old, downloading playlist')
+            return
+        if isinstance(time, QtCore.QTime):
+            time = QtCore.QDateTime(QtCore.QDate.currentDate(), time)
+            if time > now:
+                time = time.addSecs(-86400)
+            if time < minTime:
+                print('given time outside limits!', time)
+                return
+        currentTime = lastTime
+        for index, info in sorted(contents.items(), key=lambda i: i[0], reverse=True):
+            currentTime = currentTime.addMSecs(-info.length)
+            if currentTime <= time:
+                return self.getPathFromIndex(radio, index)
+        print('what is going on? time too old?', time)
+        self.downloadPlaylist(radio)
+
+
+class DownloadWidget(QtWidgets.QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFrameShape(self.StyledPanel | self.Sunken)
+        layout = QtWidgets.QHBoxLayout(self)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Maximum)
+        self.setContentsMargins(1, 1, 1, 1)
+        layout.setContentsMargins(2, 1, 1, 1)
+        layout.setSpacing(4)
+
+        self.label = QtWidgets.QLabel()
+        layout.addWidget(self.label)
+
+        self.progressBar = QtWidgets.QProgressBar()
+        layout.addWidget(self.progressBar)
+        self.progressBar.setMaximumWidth(100)
+        self.hideTimer = QtCore.QTimer(singleShot=True, interval=2000, timeout=self.hide)
+        self.hide()
+
+    def setStatus(self, received, total, count):
+        self.show()
+        self.label.setText('Downloading {r}/{t}kB ({c} file{p})'.format(
+            r = received // 1024, 
+            t = total // 1024, 
+            c = count, 
+            p = 's' if count > 1 else ''
+            ))
+        self.progressBar.setValue(int(received / total * 100))
+        self.hideTimer.start()
+
+
 class RsiPlayer(QtWidgets.QMainWindow):
     shown = False
 #    recordDockShown = False
@@ -1082,30 +1442,41 @@ class RsiPlayer(QtWidgets.QMainWindow):
 
         self.settings = QtCore.QSettings()
 #        defaultRadio = self.settings.value('defaultRadio', 0, type=int)
-        cacheDirs = QtCore.QStandardPaths.standardLocations(
+
+        appDirs = QtCore.QStandardPaths.standardLocations(
             QtCore.QStandardPaths.AppDataLocation)
+        for appDir in appDirs:
+            dirObj = checkDir(appDir)
+            if dirObj:
+                self.recordDir = checkDir(dirObj.absoluteFilePath('recordings'))
+                self.cacheDataDir = checkDir(dirObj.absoluteFilePath('cache'))
+                break
+        else:
+            # TODO: so what?
+            print('WARNING: no recordings and no data cache!')
+
+        self.cacheDirPaths = []
         self.cacheDirs = []
-#        self.cacheDataDir = QtCore.QDir(QtCore.QStandardPaths.AppDataLocation)
-        try:
-            for cacheDir in cacheDirs:
-                cd = QtCore.QFileInfo(cacheDir)
-                if not cd.exists():
-                    assert QtCore.QDir().mkpath(cd.absoluteFilePath())
-                rootDir = QtCore.QDir(cd.absoluteFilePath())
-                for radioDir in RadioNames:
-                    self.cacheDirs.append(rootDir.absoluteFilePath(radioDir))
-                    if not rootDir.exists(radioDir):
-                        rootDir.mkpath(radioDir)
-                self.recordDir = rootDir.absoluteFilePath('recordings')
-                self.cacheDataDir = QtCore.QDir(rootDir.absoluteFilePath('cache'))
-                if not self.cacheDataDir.exists():
-                    rootDir.mkpath('cache')
-                if not rootDir.exists('recordings'):
-                    rootDir.mkpath('recordings')
-                if cd.isWritable():
+        cacheDirs = QtCore.QStandardPaths.standardLocations(
+            QtCore.QStandardPaths.CacheLocation)
+        tempDirs = QtCore.QStandardPaths.standardLocations(
+            QtCore.QStandardPaths.TempLocation)
+
+        for cacheDirPath in cacheDirs + tempDirs:
+            cacheDir = checkDir(cacheDirPath)
+            if cacheDir:
+                for radioName in RadioTitles:
+                    radioCachePath = cacheDir.absoluteFilePath(radioName)
+                    radioCacheDir = checkDir(radioName, cacheDir)
+                    if not radioCacheDir:
+                        break
+                    self.cacheDirPaths.append(radioCachePath)
+                    self.cacheDirs.append(radioCacheDir)
+                else:
                     break
-        except Exception as e:
-            print('TODO create temp dir?', e)
+        else:
+            print('WARNING: no radio cache!')
+
 
         self.radioPixmaps = []
         self.radioIcons = []
@@ -1141,8 +1512,6 @@ class RsiPlayer(QtWidgets.QMainWindow):
             self.trayIcon.show()
         self.trayIcon.activated.connect(self.trayClicked)
         self.trayIcon.wheel.connect(lambda v: self.volumeUp() if v > 0 else self.volumeDown())
-
-        self.playCache = {r:{} for r in range(3)}
 
         self.radioGroup.setId(self.rete1Btn, 0)
         self.radioGroup.setId(self.rete2Btn, 1)
@@ -1191,16 +1560,20 @@ class RsiPlayer(QtWidgets.QMainWindow):
         self.queue = {}
         self.cacheQueue = []
         self.requestIndexQueue = []
-        self.cache = [{}, {}, {}]
+#        self.cache = [{}, {}, {}]
         self.contents = [{}, {}, {}]
         self.songLogs = [[], [], []]
         self.timeStamps = [[], [], []]
         self.nowAndNext = [{}, {}, {}]
+        self.songLogTimers = []
+        for r in range(3):
+            self.songLogTimers.append(
+                QtCore.QTimer(singleShot=True, interval=60000, timeout=self.requestSongLog))
         self.nextToPlay = None
         self.recordStart = None
 
         self.manager = QtNetwork.QNetworkAccessManager()
-        self.manager.finished.connect(self.networkReply)
+#        self.manager.finished.connect(self.networkReply)
 
         self.volumeSlider.volumeChanged.connect(self.setVolume)
 
@@ -1235,14 +1608,21 @@ class RsiPlayer(QtWidgets.QMainWindow):
 
         self.panel.setVisible(self.settings.value('showPanel', True, type=bool))
 
+        self.downloadStatusWidget = DownloadWidget()
+        self.statusBar().addPermanentWidget(self.downloadStatusWidget)
+
 
 #        self.resize(self.width(), self.sizeHint().height())
 
 
 #        lastRadio = self.settings.value('lastRadio', defaultRadio, type=int)
 
-        self.player = Player(self)
-        self.player.request.connect(self.requestIndex)
+        self.cache = Cache(self)
+        self.cache.segmentNotify.connect(self.segmentReadyToPlay)
+        self.cache.downloadStatusUpdate.connect(self.downloadStatusWidget.setStatus)
+
+        self.player = AudioPlayer(self)
+#        self.player.request.connect(self.requestIndex)
         self.player.currentStateChanged.connect(self.updateTrayIcon)
 
         self.lastRadio = -1
@@ -1519,12 +1899,20 @@ class RsiPlayer(QtWidgets.QMainWindow):
                 seekPos -= 1
             self.goToIndex(index)
 
+    def segmentReadyToPlay(self, radio, index):
+        self.player.start(index, radio)
+
     def togglePlay(self, play):
         if play:
             if self.player.currentState == self.player.SuspendedState:
                 self.player.resume()
-            self.loadPlaylist(requestSongLog=True)
-            self.playlistRequestTimer.start()
+            else:
+                waitingIndex = self.seekSlider.maximum() - 1 - self.seekSlider.value()
+                self.cache.downloadPlaylist(self.lastRadio, waitingIndex=waitingIndex)
+                self.requestSongLog(self.lastRadio)
+                self.songLogTimers[self.lastRadio].start()
+#            self.loadPlaylist(requestSongLog=True)
+#            self.playlistRequestTimer.start()
         else:
             if self.recordBtn.isChecked() and QtWidgets.QMessageBox.question(self, 
                 'Stop recording?', 'Recording in process, do you want to stop?', 
@@ -1615,7 +2003,7 @@ class RsiPlayer(QtWidgets.QMainWindow):
             fileName = '{}{}-{}.aac'.format(baseName, recordName, newIndex)
         recFilePath = QtCore.QDir(self.recordDir).absoluteFilePath(fileName)
 #        recFilePath = cacheDir.absoluteFilePath(fileName)
-        cacheDir = QtCore.QDir(self.cacheDirs[radio])
+        cacheDir = self.cacheDirs[radio]
         with open(recFilePath, 'wb') as recFile:
             for sourceName in files:
                 cacheDir.absoluteFilePath(fileName)
@@ -1734,10 +2122,14 @@ class RsiPlayer(QtWidgets.QMainWindow):
         if radio is None:
             radio = self.lastRadio
         req = QtNetwork.QNetworkRequest(QtCore.QUrl(SongLogUrls[radio]))
-        self.manager.get(req)
+        reply = self.manager.get(req)
+        reply.setProperty('radio', radio)
+        reply.finished.connect(self.songLogReceived)
         self.songLogRequestElapsed.start()
         req = QtNetwork.QNetworkRequest(QtCore.QUrl(NowAndNextUrls[radio]))
-        self.manager.get(req)
+        reply = self.manager.get(req)
+        reply.setProperty('radio', radio)
+        reply.finished.connect(self.nowAndNextReceived)
 
     def loadPlaylist(self, requestSongLog=False):
         print('loadPlaylist')
@@ -1757,21 +2149,71 @@ class RsiPlayer(QtWidgets.QMainWindow):
 #            print('request header', n, req.header(h))
 #        print('chiedo song list?', url, logRequestUrl, self.manager.get(req))
 
-    def downloadProgress(self, received, total):
-        url = self.sender().url().toString()
-        if not url in self.queue:
-            print('wtf?!', url, self.queue)
+#    def downloadStatusUpdate(self, received, total, count):
+#        self.downloadStatusWidget.setStatus(received, total, count)
+#        self.statusBar().showMessage('Downloading {}/{}kB {}%'.format(
+#            received // 1024, 
+#            total // 1024, 
+#            int(received / total * 100)), 1000)
+
+    def songLogReceived(self):
+        reply = self.sender()
+        if reply.error():
             return
-        self.queue[url][0] = received
-        self.queue[url][1] = total
-        r = t = 0
-        for u in self.queue.values():
-            r += u[0]
-            t += u[1]
-        self.statusBar().showMessage('Downloading {}/{}kB {}%'.format(
-            r // 1024, 
-            t // 1024, 
-            int(r / t * 100)), 1000)
+        radio = reply.property('radio')
+        if self.lastRadio == radio:
+            self.songLogTimers[radio].start()
+        if reply.error():
+            print('song log not received', NetworkErrors[reply.error()])
+            return
+        print('song log received!', radio)
+        try:
+            currentLog = self.songLogs[radio]
+            songList = json.loads(bytes((reply.readAll())).decode('utf-8'))
+            if not currentLog:
+                currentLog.extend(songList)
+            else:
+                for song in songList:
+                    if song not in currentLog:
+                        currentLog.insert(0, song)
+            self.reloadLog()
+        except Exception as e:
+            print('Song log not parsed!', e)
+
+    def nowAndNextReceived(self):
+        reply = self.sender()
+        if reply.error():
+            return
+        data = bytes((reply.readAll())).decode('utf-8')
+        try:
+            radio = reply.property('radio')
+            nowAndNext = json.loads(data)['programItems']
+            now = QtCore.QDateTime.currentDateTime()
+            for program in nowAndNext:
+                time = QtCore.QTime.fromString(program['startTime'].split(' ')[-1])
+                assert time.isValid()
+                if time > now.time().addSecs(43200):
+                    time = QtCore.QDateTime(now.date().addDays(-1), time)
+                else:
+                    time = QtCore.QDateTime(now.date(), time)
+                title = program['title']
+                try:
+                    imageUrl = program.get('imageUrl')
+                    imageFileName = QtCore.QUrl(imageUrl).fileName().rstrip('.jpg').rstrip('.jpeg')
+                    if not imageFileName.endswith('.png'):
+                        imageFileName += u'.png'
+                    if not self.cacheDataDir.exists(imageFileName) and imageUrl not in self.cacheQueue:
+                        self.cacheQueue.append(imageUrl)
+                        req = QtNetwork.QNetworkRequest(QtCore.QUrl(imageUrl))
+                        self.manager.get(req)
+#                        print('image', program.get('imageUrl'))
+#                            
+                except:
+                    imageFileName = ''
+                self.nowAndNext[radio][time] = {'title': title, 'image': imageFileName}
+            self.reloadLog()
+        except Exception as e:
+            print('now and next not loaded? ({})'.format(e), data)
 
     def requestFile(self, urlPath):
 #        .downloadProgress.connect(self.downloadProgress)
@@ -1798,6 +2240,7 @@ class RsiPlayer(QtWidgets.QMainWindow):
 #                self.manager.get(req)
 
     def networkReply(self, reply):
+        return
         if reply.error() != QtNetwork.QNetworkReply.NoError:
             if reply.error() == QtNetwork.QNetworkReply.TimeoutError:
 #                print('timeout error!!!', reply.url().toString())
@@ -1849,7 +2292,7 @@ class RsiPlayer(QtWidgets.QMainWindow):
 #            contents = [r.decode('utf-8') for r in data.split(b'\n') if r.strip() and not r.lstrip().startswith(b'#')]
             if self.liveBtn.isDown():
                 reordered = fileNames[-3:] + fileNames[-6:-3]
-                cacheDir = QtCore.QDir(self.cacheDirs[radio])
+                cacheDir = self.cacheDirs[radio]
                 for fileName in reordered:
                     if not self.nextToPlay and self.player.currentState != self.player.ActiveState:
                         self.nextToPlay = BaseStreamUrl.format(radioName) + fileName
@@ -1973,7 +2416,7 @@ class RsiPlayer(QtWidgets.QMainWindow):
                 print('wtf?', url)
                 return
             self.queue.pop(url)
-            filePath = QtCore.QDir(self.cacheDirs[radio]).absoluteFilePath(fileName)
+            filePath = self.cacheDirs[radio].absoluteFilePath(fileName)
             f = QtCore.QFile(filePath)
             f.open(f.WriteOnly)
             f.write(data)
@@ -2007,14 +2450,25 @@ class RsiPlayer(QtWidgets.QMainWindow):
                 artist = '(no artist)'
             title = song.get('title', '(no title)')
             displayTime = song.get('displayTimeOfPlayback')
-            realTime = song.get('timeOfPlayback')
+            realTimeStr = song.get('timeOfPlayback')
+#            realTime = QtCore.QDateTime(QtCore.QDate.currentDate(), QtCore.QTime.fromString(realTimeStr))
+
+            #TODO: reload playlist on mouseover?
+            # hjhoahaojhaojaho
+            if self.cache.isTimePossible(self.lastRadio, QtCore.QTime.fromString(realTimeStr)) and False:
+                href = ' href="radio/{radio}/{realTime}"'.format(
+                    radio=self.lastRadio, 
+                    realTime=realTimeStr)
+            else:
+                href = ' style="color: rgba({});"'.format(', '.join(map(str, self.palette().color(
+                    QtGui.QPalette.Disabled, QtGui.QPalette.WindowText).getRgb())))
+
             html += u'''
-                <a href="radio/{radio}/{realTime}">
+                <a{href}>
                 {displayTime}: {title} - {artist}
                 </a><br/>
             '''.format(
-                radio=self.lastRadio, 
-                realTime = realTime, 
+                href = href, 
                 displayTime = displayTime, 
                 title = title, 
                 artist = artist, 
