@@ -125,6 +125,9 @@
           <verstretch>0</verstretch>
          </sizepolicy>
         </property>
+        <property name="focusPolicy">
+         <enum>Qt::NoFocus</enum>
+        </property>
        </widget>
       </item>
       <item>
@@ -144,7 +147,7 @@
        </widget>
       </item>
       <item>
-       <widget class="QTimeEdit" name="timeEdit">
+       <widget class="LimitedTimeEdit" name="timeEdit">
         <property name="sizePolicy">
          <sizepolicy hsizetype="Maximum" vsizetype="Fixed">
           <horstretch>0</horstretch>
@@ -189,6 +192,9 @@
            <property name="enabled">
             <bool>false</bool>
            </property>
+           <property name="focusPolicy">
+            <enum>Qt::NoFocus</enum>
+           </property>
            <property name="toolTip">
             <string>Set record start</string>
            </property>
@@ -201,6 +207,9 @@
           <widget class="QToolButton" name="recEndBtn">
            <property name="enabled">
             <bool>false</bool>
+           </property>
+           <property name="focusPolicy">
+            <enum>Qt::NoFocus</enum>
            </property>
            <property name="toolTip">
             <string>Set record end</string>
@@ -215,6 +224,9 @@
            <property name="enabled">
             <bool>false</bool>
            </property>
+           <property name="focusPolicy">
+            <enum>Qt::NoFocus</enum>
+           </property>
            <property name="toolTip">
             <string>Record</string>
            </property>
@@ -225,6 +237,9 @@
          </item>
          <item>
           <widget class="QToolButton" name="toggleRecPanelBtn">
+           <property name="focusPolicy">
+            <enum>Qt::NoFocus</enum>
+           </property>
            <property name="toolTip">
             <string>Toggle timeshifted recording panel</string>
            </property>
@@ -303,6 +318,11 @@
   <customwidget>
    <class>ExpandButton</class>
    <extends>QPushButton</extends>
+   <header>player</header>
+  </customwidget>
+  <customwidget>
+   <class>LimitedTimeEdit</class>
+   <extends>QDateTimeEdit</extends>
    <header>player</header>
   </customwidget>
  </customwidgets>
